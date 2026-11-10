@@ -2606,10 +2606,12 @@ mod tests {
         // carries the obfuscation parameters between the stock fields and the
         // trailing fwmark; a peer's keepalive may print as a range.
         let observed = SystemTime::now();
+        // Equal-bound ranges print as one integer (type.c), so the zeroed
+        // timer fields here are bare `0`s.
         let single = concat!(
             "priv\tpub\t51820\t4\t40\t70\t15\t16\t12\t12\t100-200\t300-400\t",
-            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0-0\t",
-            "0-0\t0-0\t0-0\t0-0\t0-0\toff\toff\toff\n",
+            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0\t",
+            "0\t0\t0\t0\t0\toff\toff\toff\n",
             "peer-key\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t22-30\n",
         );
         let parsed = parse_wg_dump("awg0", single, observed, 3).unwrap();
@@ -2622,12 +2624,16 @@ mod tests {
 
         let all = concat!(
             "awg0\tpriv\tpub\t51820\t4\t40\t70\t15\t16\t12\t12\t100-200\t300-400\t",
-            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0-0\t",
-            "0-0\t0-0\t0-0\t0-0\t0-0\toff\toff\toff\n",
+            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0\t",
+            "0\t0\t0\t0\t0\toff\toff\toff\n",
             "awg0\tpeer-key\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t22-30\n",
         );
         let statuses = parse_wg_all_dump(all, observed, 3).unwrap();
         assert_eq!(statuses["awg0"].peers[0].bytes_rx, 12);
+        // An interface line with 6-8 fields matches no emitter's shape and
+        // must fail closed rather than guess a column.
+        let stunted = "awg0\tpriv\tpub\t51820\t1\t2\n";
+        assert!(parse_wg_all_dump(stunted, observed, 3).is_err());
 
         // A peer without allowed IPs prints `(none)` there, like endpoints.
         let none_routes = "priv\tpub\t51820\toff\npeer\t(none)\t(none)\t(none)\t999\t0\t0\toff\n";

@@ -76,7 +76,7 @@ Only the `.deb` and `.rpm` packages pull these in; with any other channel, insta
 connect. `vortix up` names the missing package and the install command for your distro.
 
 AmneziaWG profiles (WireGuard with obfuscation keys) additionally need the `awg` and
-`awg-quick` tools, which no distribution packages outside the AUR — build them from source
+`awg-quick` tools, not packaged by any distribution outside the AUR — build them from source
 (`docs/usage.md#amneziawg-profiles` has the commands); `vortix up` prints them when missing.
 
 Then install Vortix using your preferred channel:

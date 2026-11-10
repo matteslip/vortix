@@ -511,7 +511,7 @@ pub(super) fn human_status_headline(session: Option<&SessionStatus>) -> String {
                 _ => format!("● Connected to {profile} ({protocol})"),
             },
         ),
-        "handshaking" => format!("◐ Handshaking with {profile} (WireGuard)"),
+        "handshaking" => format!("◐ Handshaking with {profile} ({protocol})"),
         "connecting" => format!("◐ Connecting to {profile} (OpenVPN)"),
         "reconnecting" => format!("↻ Reconnecting to {profile} ({protocol})"),
         "disconnecting" => format!("◑ Disconnecting {profile} ({protocol})"),

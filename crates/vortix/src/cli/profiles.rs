@@ -567,6 +567,30 @@ struct ShowData {
     raw_config: Option<String>,
 }
 
+/// The `vortix show` obfuscation line for an `AmneziaWG` profile: its
+/// generation and key count. Best-effort metadata, like the masked location:
+/// `None` for other protocols or an unreadable config.
+fn amnezia_obfuscation_detail(
+    protocol: crate::profile::ProtocolKind,
+    config_path: &Path,
+) -> Option<String> {
+    if protocol != crate::profile::ProtocolKind::AmneziaWg {
+        return None;
+    }
+    std::fs::read_to_string(config_path).ok().and_then(|body| {
+        crate::amneziawg::parser::parse_awg_conf(&body)
+            .ok()
+            .and_then(|parsed| {
+                parsed.generation.map(|generation| {
+                    format!(
+                        "{generation}, {} obfuscation keys",
+                        parsed.obfuscation_keys.len()
+                    )
+                })
+            })
+    })
+}
+
 pub(super) fn handle_show(profile_name: &str, raw: bool, mode: OutputMode) -> i32 {
     let profiles = crate::config::profiles::load_profiles();
     let Some(profile) = profiles.iter().find(|p| p.name == profile_name) else {
@@ -598,24 +622,7 @@ pub(super) fn handle_show(profile_name: &str, raw: bool, mode: OutputMode) -> i3
         None
     };
 
-    let obfuscation = if profile.protocol == crate::profile::ProtocolKind::AmneziaWg {
-        std::fs::read_to_string(&profile.config_path)
-            .ok()
-            .and_then(|body| {
-                crate::amneziawg::parser::parse_awg_conf(&body)
-                    .ok()
-                    .and_then(|parsed| {
-                        parsed.generation.map(|generation| {
-                            format!(
-                                "{generation}, {} obfuscation keys",
-                                parsed.obfuscation_keys.len()
-                            )
-                        })
-                    })
-            })
-    } else {
-        None
-    };
+    let obfuscation = amnezia_obfuscation_detail(profile.protocol, &profile.config_path);
     let data = ShowData {
         name: profile.name.clone(),
         protocol: format!("{}", profile.protocol),
@@ -1026,6 +1033,29 @@ mod tests {
         .unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
         assert_eq!(count_profiles(dir.path()), (2, 0, 1, 1));
+    }
+
+    #[test]
+    fn obfuscation_detail_names_generation_only_for_amnezia() {
+        let dir = tempfile::tempdir().unwrap();
+        let awg = dir.path().join("awg01.conf");
+        std::fs::write(
+            &awg,
+            "[Interface]\nPrivateKey = x\nJc = 4\nHeaderProtectionKey = k\n",
+        )
+        .unwrap();
+        let detail =
+            amnezia_obfuscation_detail(crate::profile::ProtocolKind::AmneziaWg, &awg).unwrap();
+        assert!(detail.starts_with("AmneziaWG 3.x, "), "{detail}");
+        // Stock WireGuard and a missing config both stay quiet.
+        assert!(
+            amnezia_obfuscation_detail(crate::profile::ProtocolKind::WireGuard, &awg).is_none()
+        );
+        assert!(amnezia_obfuscation_detail(
+            crate::profile::ProtocolKind::AmneziaWg,
+            &dir.path().join("nope.conf")
+        )
+        .is_none());
     }
 
     #[test]

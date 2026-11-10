@@ -87,13 +87,19 @@ pub fn get_active_profiles(profiles: &[VpnProfile]) -> Vec<ActiveSession> {
 /// Returns `Err(())` when a status binary that exists failed, leaving
 /// tunnel state genuinely unknown.
 fn observe_wireguard_family(
+    needs_stock: bool,
+    needs_amnezia: bool,
 ) -> Result<std::collections::BTreeMap<String, crate::wireguard::tunnel::WgStatus>, ()> {
     let mut merged = std::collections::BTreeMap::new();
-    for tools in [
-        crate::wireguard::tunnel::WgTools::default(),
-        crate::amneziawg::tools(),
+    for (tools, needed) in [
+        (crate::wireguard::tunnel::WgTools::default(), needs_stock),
+        (crate::amneziawg::tools(), needs_amnezia),
     ] {
-        if !crate::platform::binary_exists(tools.show) {
+        // Observe only a family that has profiles here: the scanner matches
+        // sessions to profiles, so a stack nothing uses can hide nothing,
+        // and probing it would let its broken binary fail the observation
+        // for the family the user actually runs.
+        if !needed || !crate::platform::binary_exists(tools.show) {
             continue;
         }
         match crate::wireguard::WgTunnel::observe_all_interfaces(tools) {
@@ -125,13 +131,14 @@ pub fn scan_active_profiles(profiles: &[VpnProfile]) -> (Vec<ActiveSession>, boo
     // One protocol-owned, bounded `wg show all dump` replaces one subprocess
     // per WireGuard profile. Interface resolution remains platform-owned; the
     // exact resolved interface selects its typed status from this snapshot.
-    let (wireguard_statuses, wireguard_observation_complete) = if profiles.iter().any(|profile| {
-        matches!(
-            profile.protocol,
-            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
-        )
-    }) {
-        match observe_wireguard_family() {
+    let needs_stock = profiles
+        .iter()
+        .any(|profile| profile.protocol == ProtocolKind::WireGuard);
+    let needs_amnezia = profiles
+        .iter()
+        .any(|profile| profile.protocol == ProtocolKind::AmneziaWg);
+    let (wireguard_statuses, wireguard_observation_complete) = if needs_stock || needs_amnezia {
+        match observe_wireguard_family(needs_stock, needs_amnezia) {
             Ok(statuses) => (statuses, true),
             // A status binary that exists and failed leaves tunnel state
             // genuinely unknown, so that fails closed. An absent binary is

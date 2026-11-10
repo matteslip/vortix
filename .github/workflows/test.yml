@@ -42,9 +42,9 @@ jobs:
         run: brew install wireguard-tools openvpn go bash
       - name: Install AmneziaWG tools
         run: |
-          git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools /tmp/awg-tools
+          git clone --depth 1 --branch v3.1.20260812 https://github.com/amnezia-vpn/amneziawg-tools /tmp/awg-tools
           (cd /tmp/awg-tools/src && make && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install)
-          git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go /tmp/awg-go
+          git clone --depth 1 --branch v3.1.20260828 https://github.com/amnezia-vpn/amneziawg-go /tmp/awg-go
           (cd /tmp/awg-go && go build -o amneziawg-go && sudo cp amneziawg-go /usr/local/bin/)
           awg show all dump  # smoke: the observation path vortix shells out to
       - run: cargo test --workspace
@@ -72,9 +72,9 @@ jobs:
           chown -R tester:tester /home/tester/.cargo /home/tester/.rustup
       - name: Install AmneziaWG tools
         run: |
-          git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-tools /tmp/awg-tools
+          git clone --depth 1 --branch v3.1.20260812 https://github.com/amnezia-vpn/amneziawg-tools /tmp/awg-tools
           (cd /tmp/awg-tools/src && make && make PREFIX=/usr/local WITH_WGQUICK=yes install)
-          git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go /tmp/awg-go
+          git clone --depth 1 --branch v3.1.20260828 https://github.com/amnezia-vpn/amneziawg-go /tmp/awg-go
           (cd /tmp/awg-go && go build -o amneziawg-go && cp amneziawg-go /usr/local/bin/)
           chmod -R a+rX /usr/local/bin/awg /usr/local/bin/awg-quick /usr/local/bin/amneziawg-go
       - run: su - tester -c "cd \"$GITHUB_WORKSPACE\" && source \"\$HOME/.cargo/env\" && cargo test --workspace"

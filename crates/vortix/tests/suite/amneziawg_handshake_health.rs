@@ -40,16 +40,27 @@ fn wireguard_profiles_keep_the_stock_toolchain() {
 
 #[test]
 fn awg_status_dump_reuses_the_wireguard_evidence_parser() {
-    // `awg show <iface> dump` is byte-compatible with `wg`'s, so handshake
-    // health and peer evidence flow through the same parser.
+    // `awg show <iface> dump` prints the same peer lines and leading
+    // interface fields as `wg`'s, with ~25 obfuscation parameters inserted
+    // before the trailing fwmark (the shape amnezia-wg-tools' dump_print
+    // emits; equal-bound ranges print as one integer); handshake health and
+    // peer evidence flow through the same parser.
     let observed = UNIX_EPOCH + Duration::from_secs(1_000);
-    let dump =
-        "priv\tpub\t51820\toff\npeer\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t25\n";
+    let dump = concat!(
+        "priv\tpub\t51820\t4\t40\t70\t15\t16\t12\t12\t100-200\t300-400\t500-600\t",
+        "700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0\t0\t0\t0\t0\t0\t",
+        "off\toff\toff\n",
+        "peer\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t25-30\n",
+    );
     let parsed = parse_wg_dump("awg0", dump, observed, 5).unwrap();
     assert_eq!(parsed.interface_name, "awg0");
     assert_eq!(parsed.peers.len(), 1);
     assert_eq!(parsed.peers[0].evidence_generation, 5);
     assert!(parsed.peers[0].latest_handshake.is_some());
+    assert_eq!(
+        parsed.peers[0].persistent_keepalive,
+        Some(Duration::from_secs(25))
+    );
 }
 
 #[test]

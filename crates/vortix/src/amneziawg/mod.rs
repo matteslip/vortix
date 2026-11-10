@@ -13,7 +13,9 @@ use crate::wireguard::tunnel::WgTools;
 
 /// The quick wrapper binary, `awg-quick`.
 pub const QUICK: &str = "awg-quick";
-/// The status binary, `awg`; its `show … dump` output matches `wg`'s.
+/// The status binary, `awg`. Its `show … dump` prints the same peer lines
+/// and leading interface fields as `wg`'s, with its obfuscation parameters
+/// inserted before the trailing fwmark; the shared parser reads both shapes.
 pub const SHOW: &str = "awg";
 /// Where the macOS userspace runtime writes `<name>.name`/`.sock`.
 pub const RUN_DIR: &str = "/var/run/amneziawg";
