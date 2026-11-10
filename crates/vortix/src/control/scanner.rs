@@ -76,6 +76,45 @@ pub fn get_active_profiles(profiles: &[VpnProfile]) -> Vec<ActiveSession> {
     scan_active_profiles(profiles).0
 }
 
+/// Observe every `WireGuard`-family interface: stock `wg` plus `AmneziaWG`'s
+/// `awg`, whose interfaces `wg` cannot see. Each status binary is optional —
+/// a machine with one stack installed observes exactly that stack, and a
+/// machine with neither reports a complete, empty observation (Vortix brings
+/// these tunnels up itself, so an uninstalled stack owns nothing here).
+///
+/// # Errors
+///
+/// Returns `Err(())` when a status binary that exists failed, leaving
+/// tunnel state genuinely unknown.
+fn observe_wireguard_family(
+) -> Result<std::collections::BTreeMap<String, crate::wireguard::tunnel::WgStatus>, ()> {
+    let mut merged = std::collections::BTreeMap::new();
+    for tools in [
+        crate::wireguard::tunnel::WgTools::default(),
+        crate::amneziawg::tools(),
+    ] {
+        if !crate::platform::binary_exists(tools.show) {
+            continue;
+        }
+        match crate::wireguard::WgTunnel::observe_all_interfaces(tools) {
+            Ok(statuses) => merged.extend(statuses),
+            Err(_) => return Err(()),
+        }
+    }
+    Ok(merged)
+}
+
+/// Whether a `WireGuard`-family status binary reports this interface: stock
+/// `wg` or `AmneziaWG`'s `awg`.
+fn wireguard_family_owns(interface: &str) -> bool {
+    [
+        crate::wireguard::tunnel::WgTools::default(),
+        crate::amneziawg::tools(),
+    ]
+    .into_iter()
+    .any(|tools| crate::wireguard::WgTunnel::interface_exists_with(tools.show, interface))
+}
+
 /// Active sessions, and whether the scan could see every tunnel. `false`
 /// when a tool it needs failed (e.g. `wg show` without root), so an empty
 /// list does not mean nothing is connected.
@@ -86,26 +125,22 @@ pub fn scan_active_profiles(profiles: &[VpnProfile]) -> (Vec<ActiveSession>, boo
     // One protocol-owned, bounded `wg show all dump` replaces one subprocess
     // per WireGuard profile. Interface resolution remains platform-owned; the
     // exact resolved interface selects its typed status from this snapshot.
-    let (wireguard_statuses, wireguard_observation_complete) = if profiles
-        .iter()
-        .any(|profile| matches!(profile.protocol, ProtocolKind::WireGuard))
-    {
-        match crate::wireguard::WgTunnel::observe_all_interfaces() {
+    let (wireguard_statuses, wireguard_observation_complete) = if profiles.iter().any(|profile| {
+        matches!(
+            profile.protocol,
+            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+        )
+    }) {
+        match observe_wireguard_family() {
             Ok(statuses) => (statuses, true),
-            // An absent `wg` is not an ambiguous observation. Vortix brings
-            // WireGuard up through wg-quick, so without the userspace tools
-            // it cannot have created a tunnel here — zero interfaces is the
-            // complete and correct answer, and a missing dependency should
-            // only bite when the user actually connects. Treating this as a
-            // failed observation made the control service report an error on
-            // every poll, which buried the one startup warning that named the
-            // package to install.
-            Err(_) if !crate::platform::binary_exists("wg") => {
-                (std::collections::BTreeMap::new(), true)
-            }
-            // A `wg` that exists and failed leaves tunnel state genuinely
-            // unknown, so that still fails closed.
-            Err(_) => (std::collections::BTreeMap::new(), false),
+            // A status binary that exists and failed leaves tunnel state
+            // genuinely unknown, so that fails closed. An absent binary is
+            // not ambiguous (see `observe_wireguard_family`): Vortix brings
+            // these tunnels up itself, so a stack that is not installed
+            // cannot have a tunnel here, and treating its absence as a
+            // failed observation would bury the one startup warning that
+            // names the package to install.
+            Err(()) => (std::collections::BTreeMap::new(), false),
         }
     } else {
         (std::collections::BTreeMap::new(), true)
@@ -122,7 +157,14 @@ pub fn scan_active_profiles(profiles: &[VpnProfile]) -> (Vec<ActiveSession>, boo
     };
     for profile in profiles {
         let session_info = match profile.protocol {
-            ProtocolKind::WireGuard => check_wireguard_by_name(&profile.name, &wireguard_statuses),
+            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg => {
+                let tools = if profile.protocol == ProtocolKind::AmneziaWg {
+                    crate::amneziawg::tools()
+                } else {
+                    crate::wireguard::tunnel::WgTools::default()
+                };
+                check_wireguard_by_name(&profile.name, &wireguard_statuses, tools)
+            }
             ProtocolKind::Mesh(driver) => crate::mesh::observe(driver, &profile.id),
             ProtocolKind::OpenVpn => {
                 let path_str = profile.config_path.to_str().unwrap_or("");
@@ -266,20 +308,24 @@ fn get_all_openvpn_pids() -> Option<Vec<(PathBuf, u32)>> {
     Some(processes)
 }
 
-/// Checks if a `WireGuard` interface exists and returns session details.
+/// Checks if a `WireGuard`-family interface exists and returns session
+/// details.
 ///
-/// Uses platform-specific interface detection:
-/// - macOS: /var/run/wireguard/*.name + ifconfig
+/// Uses platform-specific interface detection keyed on the toolchain's run
+/// directory and daemon needle:
+/// - macOS: `<run_dir>/<name>.name` + ifconfig
 /// - Linux: kernel interface lookup + typed `WireGuard` protocol observation
 fn check_wireguard_by_name(
     name: &str,
     statuses: &std::collections::BTreeMap<String, crate::wireguard::tunnel::WgStatus>,
+    tools: crate::wireguard::tunnel::WgTools,
 ) -> Option<ActiveSession> {
-    // On macOS, `resolve_wireguard_interface` reads /var/run/wireguard/
-    // <name>.name and returns Some(utunN). On Linux, the kernel device
-    // is the config name. Protocol identity is established below by the
-    // typed WireGuard observer.
-    let interface_name = crate::platform::Interface::resolve_wireguard_interface(name)?;
+    // On macOS, `resolve_wireguard_interface_in` reads `<run_dir>/<name>.name`
+    // and returns Some(utunN). On Linux, the kernel device is the config
+    // name. Protocol identity is established below by the typed WireGuard
+    // observer.
+    let interface_name =
+        crate::platform::Interface::resolve_wireguard_interface_in(name, tools.run_dir)?;
 
     let mut session = ActiveSession {
         details: crate::tunnel::DetailedConnectionInfo {
@@ -289,8 +335,12 @@ fn check_wireguard_by_name(
         ..Default::default()
     };
 
-    // 1. Attempt to find PID (wireguard-go or similar)
-    if let Some(pid) = crate::platform::Interface::get_wireguard_pid(&interface_name) {
+    // 1. Attempt to find PID (wireguard-go, amneziawg-go or similar)
+    if let Some(pid) = crate::platform::Interface::get_wireguard_pid_in(
+        &interface_name,
+        tools.run_dir,
+        tools.process_needle,
+    ) {
         session.details.pid = Some(pid);
 
         // Primary method: Get start time from process (works cross-platform)
@@ -305,7 +355,7 @@ fn check_wireguard_by_name(
     }
 
     if session.started_at.is_none() {
-        session.started_at = crate::platform::wireguard_started_at(name);
+        session.started_at = crate::platform::wireguard_started_at_in(name, tools.run_dir);
     }
 
     // Log if we couldn't determine start time
@@ -457,9 +507,11 @@ fn check_openvpn_by_pid(
     }
     // The device list covers every tun on the host, not this process's: it
     // fills in the known device's address, and otherwise is only a guess.
+    // Devices already claimed by a WireGuard-family tunnel (stock or
+    // AmneziaWG) are not OpenVPN candidates.
     let candidates = crate::platform::tun_addresses()
         .into_iter()
-        .filter(|(iface, _, _)| !crate::wireguard::WgTunnel::interface_exists(iface))
+        .filter(|(iface, _, _)| !wireguard_family_owns(iface))
         .collect::<Vec<_>>();
     let chosen = if detected_iface.is_empty() {
         candidates.first()

@@ -228,7 +228,9 @@ impl Config {
         match protocol {
             crate::profile::ProtocolKind::OpenVpn => self.openvpn_timeout,
             crate::profile::ProtocolKind::Mesh(_) => self.mesh_timeout,
-            crate::profile::ProtocolKind::WireGuard => self.wireguard_timeout,
+            crate::profile::ProtocolKind::WireGuard | crate::profile::ProtocolKind::AmneziaWg => {
+                self.wireguard_timeout
+            }
         }
     }
 }

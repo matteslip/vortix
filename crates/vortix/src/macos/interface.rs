@@ -14,8 +14,14 @@ pub struct MacInterface;
 impl MacInterface {
     #[must_use]
     pub fn resolve_wireguard_interface(name: &str) -> Option<String> {
-        let pid_file =
-            PathBuf::from(crate::constants::WIREGUARD_RUN_DIR).join(format!("{name}.name"));
+        Self::resolve_wireguard_interface_in(name, crate::constants::WIREGUARD_RUN_DIR)
+    }
+
+    /// [`Self::resolve_wireguard_interface`] for a quick tool whose userspace
+    /// runtime names interfaces in `run_dir` instead of `WireGuard`'s.
+    #[must_use]
+    pub fn resolve_wireguard_interface_in(name: &str, run_dir: &str) -> Option<String> {
+        let pid_file = PathBuf::from(run_dir).join(format!("{name}.name"));
         if pid_file.exists() {
             Some(
                 std::fs::read_to_string(&pid_file)
@@ -30,8 +36,14 @@ impl MacInterface {
 
     #[must_use]
     pub fn get_wireguard_pid(interface: &str) -> Option<u32> {
-        let sock_path =
-            PathBuf::from(crate::constants::WIREGUARD_RUN_DIR).join(format!("{interface}.sock"));
+        Self::get_wireguard_pid_in(interface, crate::constants::WIREGUARD_RUN_DIR, "wireguard")
+    }
+
+    /// [`Self::get_wireguard_pid`] for a quick tool whose userspace runtime
+    /// lives in `run_dir` and runs a daemon whose path contains `needle`.
+    #[must_use]
+    pub fn get_wireguard_pid_in(interface: &str, run_dir: &str, needle: &str) -> Option<u32> {
+        let sock_path = PathBuf::from(run_dir).join(format!("{interface}.sock"));
 
         // primary path is libproc — walk every PID's socket
         // FDs and match the bound unix-socket path against `sock_path`.
@@ -42,8 +54,9 @@ impl MacInterface {
 
         // fallback search via libc::proc_listpids + proc_pidpath
         // (was `ps -ax -o pid,command`). Walks the live PID list and
-        // filters by binary path containing "wireguard" + interface name.
-        find_pid_with_cmdline_substring("wireguard", Some(interface))
+        // filters by binary path containing the daemon needle + interface
+        // name.
+        find_pid_with_cmdline_substring(needle, Some(interface))
     }
 
     #[must_use]
@@ -321,11 +334,16 @@ pub fn process_tun_device(pid: u32) -> Option<String> {
 /// When wireguard-go created `<name>`, from its runtime name file.
 #[must_use]
 pub fn wireguard_started_at(name: &str) -> Option<std::time::SystemTime> {
-    std::fs::metadata(
-        std::path::Path::new(crate::constants::WIREGUARD_RUN_DIR).join(format!("{name}.name")),
-    )
-    .and_then(|metadata| metadata.created())
-    .ok()
+    wireguard_started_at_in(name, crate::constants::WIREGUARD_RUN_DIR)
+}
+
+/// [`wireguard_started_at`] for a quick tool whose userspace runtime names
+/// interfaces in `run_dir` instead of `WireGuard`'s.
+#[must_use]
+pub fn wireguard_started_at_in(name: &str, run_dir: &str) -> Option<std::time::SystemTime> {
+    std::fs::metadata(std::path::Path::new(run_dir).join(format!("{name}.name")))
+        .and_then(|metadata| metadata.created())
+        .ok()
 }
 
 #[cfg(test)]

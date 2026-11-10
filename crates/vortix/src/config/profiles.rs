@@ -113,7 +113,7 @@ pub(crate) fn prepare_profile_import(
         }
     };
 
-    if protocol == ProtocolKind::WireGuard {
+    if matches!(protocol, ProtocolKind::WireGuard | ProtocolKind::AmneziaWg) {
         let interface_name = path
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -125,7 +125,9 @@ pub(crate) fn prepare_profile_import(
 
     // Extract and validate profile info
     let (name, location) = match protocol {
-        ProtocolKind::WireGuard => parse_wireguard_config(&content, path)?,
+        ProtocolKind::WireGuard | ProtocolKind::AmneziaWg => {
+            parse_wireguard_config(&content, path)?
+        }
         ProtocolKind::OpenVpn => parse_openvpn_config(&content, path)?,
         ProtocolKind::Mesh(_) => parse_mesh_config(&content, path)?,
     };
@@ -454,7 +456,9 @@ pub(crate) fn load_profiles_from(profiles_dir: &Path) -> Vec<VpnProfile> {
         let path = profiles_dir.join(&summary.config_file);
         if let Ok(content) = fs::read_to_string(&path) {
             let result = match protocol {
-                ProtocolKind::WireGuard => parse_wireguard_config(&content, &path),
+                ProtocolKind::WireGuard | ProtocolKind::AmneziaWg => {
+                    parse_wireguard_config(&content, &path)
+                }
                 ProtocolKind::OpenVpn => parse_openvpn_config(&content, &path),
                 ProtocolKind::Mesh(_) => parse_mesh_config(&content, &path),
             };

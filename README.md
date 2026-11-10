@@ -75,6 +75,10 @@ Only the `.deb` and `.rpm` packages pull these in; with any other channel, insta
 `wg-quick` and `openvpn` as subprocesses, so without them a profile imports but cannot
 connect. `vortix up` names the missing package and the install command for your distro.
 
+AmneziaWG profiles (WireGuard with obfuscation keys) additionally need the `awg` and
+`awg-quick` tools, which no distribution packages outside the AUR — build them from source
+(`docs/usage.md#amneziawg-profiles` has the commands); `vortix up` prints them when missing.
+
 Then install Vortix using your preferred channel:
 
 | Channel | Install |
@@ -122,7 +126,7 @@ Every command, key and panel is in the [usage guide](https://github.com/Harry-kp
 
 | | macOS | Linux |
 |---|---|---|
-| VPN tools | Homebrew `wireguard-tools`, `openvpn` | Distribution `wireguard-tools`, `openvpn` |
+| VPN tools | Homebrew `wireguard-tools`, `openvpn`; AmneziaWG from source | Distribution `wireguard-tools`, `openvpn`; AmneziaWG from source/AUR |
 | Kill switch | PF (`pfctl`) | nftables (`nft`) |
 | DNS | System Configuration | systemd-resolved or `resolvconf` |
 | CI | macOS | Ubuntu and Fedora |

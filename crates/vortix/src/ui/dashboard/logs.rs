@@ -142,7 +142,7 @@ fn render_tunnel_log(
             ))
         }
         crate::profile::ProtocolKind::Mesh(driver) => Some(driver.log_path(&profile.id)),
-        crate::profile::ProtocolKind::WireGuard => None,
+        crate::profile::ProtocolKind::WireGuard | crate::profile::ProtocolKind::AmneziaWg => None,
     });
     let name = profile.map(|profile| format!("{} · {}", profile.name, profile.protocol));
     let live = target.is_some_and(|id| app.tunnel_is_active(id));

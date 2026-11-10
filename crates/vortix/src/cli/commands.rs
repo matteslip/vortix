@@ -672,6 +672,7 @@ struct InfoData {
     profiles_dir: String,
     profile_count: u32,
     wireguard_count: u32,
+    amnezia_count: u32,
     openvpn_count: u32,
     mesh_count: u32,
     is_root: bool,
@@ -684,8 +685,9 @@ struct InfoData {
 
 fn handle_info(config_dir: &Path, source: &str, mode: OutputMode) {
     let profiles_dir = config_dir.join(constants::PROFILES_DIR_NAME);
-    let (wg_count, ovpn_count, mesh_count) = super::profiles::count_profiles(&profiles_dir);
-    let total = wg_count + ovpn_count + mesh_count;
+    let (wg_count, awg_count, ovpn_count, mesh_count) =
+        super::profiles::count_profiles(&profiles_dir);
+    let total = wg_count + awg_count + ovpn_count + mesh_count;
 
     let config_file = config_dir.join("config.toml");
     let config_status = if config_file.is_file() {
@@ -708,6 +710,7 @@ fn handle_info(config_dir: &Path, source: &str, mode: OutputMode) {
         profiles_dir: profiles_dir.to_string_lossy().to_string(),
         profile_count: total,
         wireguard_count: wg_count,
+        amnezia_count: awg_count,
         openvpn_count: ovpn_count,
         mesh_count,
         is_root: crate::platform::is_root(),
@@ -722,7 +725,7 @@ fn handle_info(config_dir: &Path, source: &str, mode: OutputMode) {
             println!("  Config file: {} ({config_status})", config_file.display());
             println!(
                 "  Profiles:    {total} ({})",
-                super::profiles::profile_breakdown(wg_count, ovpn_count, mesh_count)
+                super::profiles::profile_breakdown(wg_count, awg_count, ovpn_count, mesh_count)
             );
             println!("  Profiles at: {}", profiles_dir.display());
             println!(

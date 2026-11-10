@@ -269,7 +269,7 @@ impl FsProfileStore {
     fn extension(protocol: ProtocolKind) -> &'static str {
         match protocol {
             ProtocolKind::OpenVpn => "ovpn",
-            ProtocolKind::WireGuard => "conf",
+            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg => "conf",
             ProtocolKind::Mesh(driver) => driver.slug(),
         }
     }

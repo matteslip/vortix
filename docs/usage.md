@@ -124,7 +124,7 @@ session of the last one, `… · last session, ended HH:MM:SS`. `L` clears the v
 ## Profiles
 
 ```bash
-vortix import ./work.conf          # WireGuard .conf, OpenVPN .ovpn or .conf, NetBird .netbird
+vortix import ./work.conf          # WireGuard or AmneziaWG .conf, OpenVPN .ovpn or .conf, NetBird .netbird
 vortix import ./profiles/          # every supported file in a directory
 vortix import https://example.com/work.ovpn
 vortix import netbird https://nb.example.com   # a NetBird network (see NetBird networks)
@@ -139,6 +139,33 @@ apply until you import it again. A WireGuard profile name becomes the interface 
 letters, numbers, `_`, `.` or `-`. Profiles may hold up to 1024 routes. Profiles that run
 commands (`PreUp`/`PostUp`/`PreDown`/`PostDown`, OpenVPN `up`/`down` and similar) are refused;
 use [hooks](configuration.md#hooks) instead.
+
+### AmneziaWG profiles
+
+AmneziaWG is WireGuard with protocol obfuscation: its `.conf` files carry extra keys
+(`Jc`, `Jmin`, `Jmax`, `S1`-`S4`, `H1`-`H4`, `I1`-`I5`, `HeaderProtectionKey`, ...) that stock
+`wg-quick` rejects, so Vortix runs them through AmneziaWG's own `awg-quick`/`awg` binaries.
+Import detects the keys and classifies the profile by generation (Legacy 1.x, 2.0 or 3.x)
+automatically; a plain WireGuard config stays WireGuard. The sidebar and header show `AWG`,
+and everything else - routes and split tunnels from `AllowedIPs`, DNS, the kill switch,
+handshake health, side-by-side tunnels - works exactly as for WireGuard, because `awg show`
+reports the same peer and handshake evidence.
+
+The tools ship in no package manager Vortix can name, so install them from source (once;
+on Arch, `amneziawg-tools` and `amneziawg-dkms` are in the AUR):
+
+```bash
+brew install go bash  # macOS only: awg-quick needs bash 4+ (macOS ships 3.2)
+git clone https://github.com/amnezia-vpn/amneziawg-go && cd amneziawg-go && make \
+  && sudo cp amneziawg-go /usr/local/bin/
+git clone https://github.com/amnezia-vpn/amneziawg-tools && cd amneziawg-tools/src && make \
+  && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install   # awg + awg-quick
+```
+
+What this does not cover: the AmneziaVPN app's `.vpn` exports and `vpn://` share links
+(export a native AmneziaWG `.conf` from it instead), the AmneziaWG desktop app (quit it
+before connecting, as it owns the same `awg` runtime), and value validation of the
+obfuscation keys - `awg` itself rejects a malformed profile at connect time.
 
 ### NetBird networks
 

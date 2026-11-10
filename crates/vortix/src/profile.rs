@@ -149,6 +149,9 @@ impl std::fmt::Display for ProfileId {
 #[non_exhaustive]
 pub enum ProtocolKind {
     WireGuard,
+    /// `AmneziaWG`: a `WireGuard`-compatible stack with obfuscation keys a
+    /// stock `wg-quick` rejects, driven by its own binaries.
+    AmneziaWg,
     OpenVpn,
     /// A mesh network, run by its vendor's client.
     Mesh(crate::mesh::MeshDriver),
@@ -179,6 +182,7 @@ impl std::fmt::Display for ProtocolKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::WireGuard => f.write_str("WireGuard"),
+            Self::AmneziaWg => f.write_str("AmneziaWG"),
             Self::OpenVpn => f.write_str("OpenVPN"),
             Self::Mesh(driver) => f.write_str(driver.name()),
         }
@@ -277,10 +281,10 @@ pub fn has_profile_extension(path: &std::path::Path) -> bool {
     }
 }
 
-/// What a `.conf` file's syntax says it is: `WireGuard` sections, `OpenVPN`
-/// directives, or both (which nothing can connect, so it is refused).
-/// A file with neither reads as `WireGuard`; its parser then names what is
-/// missing.
+/// What a `.conf` file's syntax says it is: `WireGuard` sections (with or
+/// without `AmneziaWG`'s obfuscation keys), `OpenVPN` directives, or both
+/// (which nothing can connect, so it is refused). A file with neither reads
+/// as `WireGuard`; its parser then names what is missing.
 ///
 /// # Errors
 ///
@@ -302,11 +306,15 @@ pub fn detect_conf_protocol(text: &str) -> Result<ProtocolKind, String> {
             openvpn = true;
         }
     }
-    match (wireguard, openvpn) {
-        (true, true) => Err("the file mixes WireGuard sections and OpenVPN directives".into()),
-        (false, true) => Ok(ProtocolKind::OpenVpn),
-        _ => Ok(ProtocolKind::WireGuard),
-    }
+    let kind = match (wireguard, openvpn) {
+        (true, true) => {
+            return Err("the file mixes WireGuard sections and OpenVPN directives".into())
+        }
+        (false, true) => ProtocolKind::OpenVpn,
+        _ if crate::amneziawg::parser::looks_like_amnezia(text) => ProtocolKind::AmneziaWg,
+        _ => ProtocolKind::WireGuard,
+    };
+    Ok(kind)
 }
 
 #[cfg(test)]
@@ -413,6 +421,19 @@ mod tests {
             Ok(ProtocolKind::WireGuard)
         );
         assert!(detect_conf_protocol(&format!("{wg}remote x 1\n")).is_err());
+    }
+
+    #[test]
+    fn conf_protocol_detects_amnezia_keys_as_amneziawg() {
+        let awg = "[Interface]\nPrivateKey = x\nJc = 5\nJmin = 40\nJmax = 70\nS1 = 15\n\
+                   S2 = 16\nH1 = 100\nH2 = 200\nH3 = 300\nH4 = 400\n\n[Peer]\nPublicKey = y\n";
+        assert_eq!(detect_conf_protocol(awg), Ok(ProtocolKind::AmneziaWg));
+        // Header protection alone (AWG 3.x) is enough to switch the protocol.
+        let awg3 = "[Interface]\nPrivateKey = x\nHeaderProtectionKey = k\n";
+        assert_eq!(detect_conf_protocol(awg3), Ok(ProtocolKind::AmneziaWg));
+        // A comment mentioning an AmneziaWG key stays WireGuard.
+        let commented = "[Interface]\nPrivateKey = x\n# Jc = 5 would make this AmneziaWG\n";
+        assert_eq!(detect_conf_protocol(commented), Ok(ProtocolKind::WireGuard));
     }
 
     /// A `WireGuard` name is its Linux interface and lands unquoted in pf/nft

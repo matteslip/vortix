@@ -829,8 +829,10 @@ pub(super) fn handle_rename(old: &str, new: &str, config_dir: &Path, mode: Outpu
         mode,
     );
 
-    if fresh_profile.protocol == crate::profile::ProtocolKind::WireGuard
-        && crate::profile::validate_wireguard_interface_name(trimmed).is_err()
+    if matches!(
+        fresh_profile.protocol,
+        crate::profile::ProtocolKind::WireGuard | crate::profile::ProtocolKind::AmneziaWg
+    ) && crate::profile::validate_wireguard_interface_name(trimmed).is_err()
     {
         print_error_and_exit(
             mode,
@@ -900,23 +902,27 @@ fn sidecar_protocol(config: &Path) -> Option<String> {
         .map(|value| value.trim().trim_matches('"').to_owned())
 }
 
-/// `2 WireGuard, 1 OpenVPN`, plus mesh networks only when there are any.
-pub(crate) fn profile_breakdown(wg: u32, ovpn: u32, mesh: u32) -> String {
-    match mesh {
-        0 => format!("{wg} WireGuard, {ovpn} OpenVPN"),
-        _ => format!(
-            "{wg} WireGuard, {ovpn} OpenVPN, {mesh} {}",
-            crate::mesh::MeshDriver::names()
-        ),
+/// `2 WireGuard, 1 AmneziaWG, 1 OpenVPN`, plus mesh networks only when
+/// there are any.
+pub(crate) fn profile_breakdown(wg: u32, awg: u32, ovpn: u32, mesh: u32) -> String {
+    let mut parts = vec![format!("{wg} WireGuard")];
+    if awg > 0 {
+        parts.push(format!("{awg} AmneziaWG"));
     }
+    parts.push(format!("{ovpn} OpenVPN"));
+    if mesh > 0 {
+        parts.push(format!("{mesh} {}", crate::mesh::MeshDriver::names()));
+    }
+    parts.join(", ")
 }
 
-/// `WireGuard`, `OpenVPN` and mesh-network profiles.
-pub(crate) fn count_profiles(profiles_dir: &Path) -> (u32, u32, u32) {
+/// `WireGuard`, `AmneziaWG`, `OpenVPN` and mesh-network profiles.
+pub(crate) fn count_profiles(profiles_dir: &Path) -> (u32, u32, u32, u32) {
     if !profiles_dir.is_dir() {
-        return (0, 0, 0);
+        return (0, 0, 0, 0);
     }
     let mut wg = 0u32;
+    let mut awg = 0u32;
     let mut ovpn = 0u32;
     let mut mesh = 0u32;
     if let Ok(entries) = std::fs::read_dir(profiles_dir) {
@@ -939,13 +945,11 @@ pub(crate) fn count_profiles(profiles_dir: &Path) -> (u32, u32, u32) {
                 // An OpenVPN profile may be imported as `.conf`, so the
                 // extension alone put it in the WireGuard column. The sidecar
                 // records what it actually is.
-                Some("conf") => {
-                    if sidecar_protocol(&path).as_deref() == Some("OpenVpn") {
-                        ovpn += 1;
-                    } else {
-                        wg += 1;
-                    }
-                }
+                Some("conf") => match sidecar_protocol(&path).as_deref() {
+                    Some("OpenVpn") => ovpn += 1,
+                    Some("AmneziaWg") => awg += 1,
+                    _ => wg += 1,
+                },
                 Some("ovpn") => ovpn += 1,
                 Some(other) if crate::mesh::MeshDriver::from_extension(other).is_some() => {
                     mesh += 1;
@@ -954,7 +958,7 @@ pub(crate) fn count_profiles(profiles_dir: &Path) -> (u32, u32, u32) {
             }
         }
     }
-    (wg, ovpn, mesh)
+    (wg, awg, ovpn, mesh)
 }
 
 #[cfg(test)]
@@ -967,8 +971,8 @@ mod tests {
             .prefix("vortix_test_")
             .tempdir()
             .unwrap();
-        let (wg, ovpn, mesh) = count_profiles(dir.path());
-        assert_eq!((wg, ovpn, mesh), (0, 0, 0));
+        let (wg, awg, ovpn, mesh) = count_profiles(dir.path());
+        assert_eq!((wg, awg, ovpn, mesh), (0, 0, 0, 0));
     }
 
     #[test]
@@ -977,8 +981,8 @@ mod tests {
             .prefix("vortix_test_")
             .tempdir()
             .unwrap();
-        let (wg, ovpn, mesh) = count_profiles(&dir.path().join("no_such"));
-        assert_eq!((wg, ovpn, mesh), (0, 0, 0));
+        let (wg, awg, ovpn, mesh) = count_profiles(&dir.path().join("no_such"));
+        assert_eq!((wg, awg, ovpn, mesh), (0, 0, 0, 0));
     }
 
     #[test]
@@ -996,7 +1000,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("notes.txt"), "hello").unwrap();
-        assert_eq!(count_profiles(dir.path()), (2, 1, 1));
+        assert_eq!(count_profiles(dir.path()), (2, 0, 1, 1));
     }
 
     #[test]

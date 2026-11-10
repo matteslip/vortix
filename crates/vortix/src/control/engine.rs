@@ -675,7 +675,11 @@ impl Engine {
             .state
             .tunnels()
             .filter(|tunnel| {
-                tunnel.phase == Phase::Up && tunnel.spec.protocol == ProtocolKind::WireGuard
+                tunnel.phase == Phase::Up
+                    && matches!(
+                        tunnel.spec.protocol,
+                        ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+                    )
             })
             .map(|tunnel| (tunnel.spec.profile_id.clone(), tunnel.spec.name.clone()))
             .collect::<Vec<_>>();

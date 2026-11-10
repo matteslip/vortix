@@ -185,7 +185,9 @@ impl AppConfig {
         protocol: crate::profile::ProtocolKind,
     ) -> u64 {
         let protocol_gate = match protocol {
-            crate::profile::ProtocolKind::WireGuard => self.wireguard_handshake_timeout_secs,
+            crate::profile::ProtocolKind::WireGuard | crate::profile::ProtocolKind::AmneziaWg => {
+                self.wireguard_handshake_timeout_secs
+            }
             crate::profile::ProtocolKind::OpenVpn => self.connect_timeout,
             // A daemon that failed to connect still has to stop.
             crate::profile::ProtocolKind::Mesh(_) => {
@@ -201,7 +203,7 @@ impl AppConfig {
         let gate = secs.saturating_sub(crate::constants::CONTROL_COMPLETION_GRACE_SECS);
         let mut config = self.clone();
         match protocol {
-            crate::profile::ProtocolKind::WireGuard => {
+            crate::profile::ProtocolKind::WireGuard | crate::profile::ProtocolKind::AmneziaWg => {
                 config.wireguard_handshake_timeout_secs =
                     gate.clamp(1, crate::wireguard::tunnel::MAX_HANDSHAKE_TIMEOUT.as_secs());
             }

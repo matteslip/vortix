@@ -28,7 +28,8 @@ It never adds a panel per connection, a second vocabulary or its own settings sc
   management), a network (NetBird: a management URL with SSO or a setup key). A source
   produces connections; it does not run them.
 - **Transport**: how a connection runs as a process Vortix starts, supervises and stops:
-  `wg-quick`, `openvpn`, the `netbird` daemon (`netbird service run`, one per network with its
+  `wg-quick`, `awg-quick` (AmneziaWG, a config-file source on the WireGuard lifecycle),
+  `openvpn`, the `netbird` daemon (`netbird service run`, one per network with its
   own state directory), later `openconnect`. A
   transport reports what it can (peers, handshakes, pushed routes) and says whether it
   installs its own routes and DNS; the planner coordinates with one that does instead of
@@ -49,7 +50,7 @@ behaviour in the engine and one UI, written once:
 
 | Kind | Examples | Shared model and UI |
 |---|---|---|
-| Config file | WireGuard `.conf`, OpenVPN `.ovpn` | Profile; import, rename, delete |
+| Config file | WireGuard `.conf`, AmneziaWG `.conf`, OpenVPN `.ovpn` | Profile; import, rename, delete |
 | Provider account | Mullvad, Proton, IVPN | Account, `Server` catalog (location, load, latency), keys; one server picker, favourites, recents, connect fastest |
 | Mesh network (`mesh/`, a `MeshDriver` per vendor) | NetBird, Tailscale, Headscale, Netmaker | Network, `MeshPeer` (address, connected, direct or relayed, latency), `RoutedNetwork` (range or domains, in use, exit node), login (a link or a key); its networks and peers on Details' flip side (shared with every VPN), one login step; the daemon runs under the kill switch's transport group |
 
