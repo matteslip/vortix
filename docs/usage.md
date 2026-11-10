@@ -162,6 +162,24 @@ git clone https://github.com/amnezia-vpn/amneziawg-tools && cd amneziawg-tools/s
   && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install   # awg + awg-quick
 ```
 
+Two more steps on macOS, where upstream's `awg-quick` darwin script still
+calls the stock `wg` binary and the `/var/run/wireguard` directory, neither
+of which can reach `amneziawg-go` (verified against amnezia-wg-tools
+v3.1.20260812; the original stays beside the script as
+`awg-quick.upstream-orig`):
+
+```bash
+sudo sed -E -i '' -e 's|/var/run/wireguard|/var/run/amneziawg|g' \
+  -e 's|^wg show|awg show|' -e 's|([^a-zA-Z_(])wg show|\1awg show|g' \
+  -e 's|\(wg show|(awg show|g' \
+  -e 's|([^a-zA-Z_])wg setconf|\1awg setconf|g' \
+  -e 's|([^a-zA-Z_])wg showconf|\1awg showconf|g' /usr/local/bin/awg-quick
+sudo ln -s "$(command -v bash)" /usr/local/bin/bash  # `env bash` under sudo finds bash 4+
+```
+
+On Linux neither step is needed: the kernel module answers `awg setconf`
+directly, and no `wg` call is involved.
+
 What this does not cover: the AmneziaVPN app's `.vpn` exports and `vpn://` share links
 (export a native AmneziaWG `.conf` from it instead), the AmneziaWG desktop app (quit it
 before connecting, as it owns the same `awg` runtime), and value validation of the

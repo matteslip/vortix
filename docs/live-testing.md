@@ -37,7 +37,9 @@ Any self-hosted AmneziaWG server works as the test peer; the lab does not run on
 disposable box made with `https://github.com/bivlked/amneziawg-installer` (or export a native
 `.conf` from an existing AmneziaVPN server) and destroy it after the run. Import the client
 `.conf` under a new name (`awg01`) — its obfuscation keys make detection automatic — and quit
-the AmneziaWG desktop app on the Mac first, since it owns the same `awg` runtime. Never print
+the AmneziaWG desktop app on the Mac first, since it owns the same `awg` runtime (on the Mac
+the upstream `awg-quick` darwin script also needs the patch from
+`docs/usage.md#amneziawg-profiles` before anything connects). Never print
 or commit the profile: it holds the private key. One generation per run is enough; 3.x
 exercises the newest keys (`HeaderProtectionKey`, timers), Legacy only the 1.x set.
 

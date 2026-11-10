@@ -340,11 +340,13 @@ pub fn install_hint(pkg: &str) -> String {
     match pkg {
         // NetBird's own tap carries the command without the desktop app.
         "netbird" => "brew install netbirdio/tap/netbird".to_string(),
-        // AmneziaWG ships no Homebrew formula; build the tools from source.
+        // AmneziaWG ships no Homebrew formula; build the tools from source
+        // (plus the macOS patch in docs/usage.md#amneziawg-profiles).
         "amnezia-wg" => "\
 brew install go bash  # awg-quick needs bash 4+\
 \ngit clone https://github.com/amnezia-vpn/amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/\
-\ngit clone https://github.com/amnezia-vpn/amneziawg-tools && cd src && make && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install"
+\ngit clone https://github.com/amnezia-vpn/amneziawg-tools && cd src && make && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install\
+\n# then the macOS patch in docs/usage.md#amneziawg-profiles"
             .to_string(),
         _ => format!("brew install {pkg}"),
     }
