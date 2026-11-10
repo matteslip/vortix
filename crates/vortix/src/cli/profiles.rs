@@ -558,6 +558,9 @@ fn import_from_directory(
 struct ShowData {
     name: String,
     protocol: String,
+    /// `AmneziaWG` only: the obfuscation generation and key count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    obfuscation: Option<String>,
     location: String,
     config_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -595,9 +598,28 @@ pub(super) fn handle_show(profile_name: &str, raw: bool, mode: OutputMode) -> i3
         None
     };
 
+    let obfuscation = if profile.protocol == crate::profile::ProtocolKind::AmneziaWg {
+        std::fs::read_to_string(&profile.config_path)
+            .ok()
+            .and_then(|body| {
+                crate::amneziawg::parser::parse_awg_conf(&body)
+                    .ok()
+                    .and_then(|parsed| {
+                        parsed.generation.map(|generation| {
+                            format!(
+                                "{generation}, {} obfuscation keys",
+                                parsed.obfuscation_keys.len()
+                            )
+                        })
+                    })
+            })
+    } else {
+        None
+    };
     let data = ShowData {
         name: profile.name.clone(),
         protocol: format!("{}", profile.protocol),
+        obfuscation,
         location: profile.location.clone(),
         config_path: profile.config_path.to_string_lossy().to_string(),
         raw_config: raw_content.clone(),
@@ -607,6 +629,9 @@ pub(super) fn handle_show(profile_name: &str, raw: bool, mode: OutputMode) -> i3
         OutputMode::Human => {
             println!("Profile: {}", profile.name);
             println!("Protocol: {}", profile.protocol);
+            if let Some(obfuscation) = &data.obfuscation {
+                println!("Obfuscation: {obfuscation}");
+            }
             println!("Location: {}", profile.location);
             println!("Config: {}", profile.config_path.display());
             if let Some(content) = &raw_content {

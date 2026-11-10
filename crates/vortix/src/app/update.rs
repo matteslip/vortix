@@ -940,10 +940,12 @@ impl App {
     /// a placeholder before any has connected). Empty when there are none.
     pub(crate) fn tunnel_log_steps(&self) -> Vec<Option<ProfileId>> {
         let logged = || {
-            self.runtime
-                .profiles
-                .iter()
-                .filter(|profile| profile.protocol != ProtocolKind::WireGuard)
+            self.runtime.profiles.iter().filter(|profile| {
+                !matches!(
+                    profile.protocol,
+                    ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+                )
+            })
         };
         let active = logged()
             .filter(|profile| self.tunnel_is_active(&profile.id))

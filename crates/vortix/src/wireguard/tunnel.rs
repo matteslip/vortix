@@ -542,6 +542,13 @@ fn parse_unix_timestamp(
 }
 
 /// Parse the stable tab-separated `WireGuard` dump format.
+///
+/// `AmneziaWG`'s `awg show … dump` prints the same peer lines and the same
+/// leading interface fields, but inserts its obfuscation parameters between
+/// the stock interface fields and `fwmark`, which stays the last column; a
+/// peer's keepalive may print as a range (`22-30`). Both shapes parse here.
+/// A peer's `PersistentKeepalive` range reports its lower bound, and
+/// `(none)` in the `AllowedIPs` column reads as no routes.
 pub fn parse_wg_dump(
     interface_name: &str,
     dump: &str,
@@ -559,17 +566,20 @@ pub fn parse_wg_dump(
         .next()
         .ok_or_else(|| TunnelError::MalformedStatus("WireGuard dump was empty".into()))?;
     let fields = interface.split('\t').collect::<Vec<_>>();
-    if fields.len() != 4 {
+    if fields.len() < 4 {
         return Err(TunnelError::MalformedStatus(
             "WireGuard interface dump shape".into(),
         ));
     }
+    // `fwmark` closes the interface line in both shapes: stock at four
+    // fields, AmneziaWG after its obfuscation parameters.
+    let fwmark_field = fields[fields.len() - 1];
     let listen_port = fields[2]
         .parse::<u16>()
         .map_err(|_| TunnelError::MalformedStatus("WireGuard listen port".into()))?;
-    let fwmark_valid = fields[3].eq_ignore_ascii_case("off")
-        || fields[3].parse::<u32>().is_ok()
-        || fields[3]
+    let fwmark_valid = fwmark_field.eq_ignore_ascii_case("off")
+        || fwmark_field.parse::<u32>().is_ok()
+        || fwmark_field
             .strip_prefix("0x")
             .and_then(|value| u32::from_str_radix(value, 16).ok())
             .is_some();
@@ -595,26 +605,39 @@ pub fn parse_wg_dump(
                 "WireGuard peer dump shape".into(),
             ));
         }
-        let allowed_routes = fields[3]
-            .split(',')
-            .map(str::trim)
-            .filter(|route| !route.is_empty())
-            .map(|route| {
-                route
-                    .parse::<crate::cidr::Cidr>()
-                    .map(|_| route.to_string())
-                    .map_err(|_| TunnelError::MalformedStatus("WireGuard AllowedIPs".into()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let allowed_routes = if fields[3] == "(none)" {
+            Vec::new()
+        } else {
+            fields[3]
+                .split(',')
+                .map(str::trim)
+                .filter(|route| !route.is_empty())
+                .map(|route| {
+                    route
+                        .parse::<crate::cidr::Cidr>()
+                        .map(|_| route.to_string())
+                        .map_err(|_| TunnelError::MalformedStatus("WireGuard AllowedIPs".into()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let bytes_rx = fields[5]
             .parse()
             .map_err(|_| TunnelError::MalformedStatus("WireGuard receive counter".into()))?;
         let bytes_tx = fields[6]
             .parse()
             .map_err(|_| TunnelError::MalformedStatus("WireGuard transmit counter".into()))?;
-        let keepalive = fields[7]
-            .parse::<u64>()
-            .map_err(|_| TunnelError::MalformedStatus("WireGuard keepalive interval".into()))?;
+        // Stock `wg` prints seconds or `off`; AmneziaWG 3 may print a range
+        // (`22-30`), whose lower bound carries the interval.
+        let keepalive = if fields[7].eq_ignore_ascii_case("off") {
+            0
+        } else {
+            fields[7]
+                .split('-')
+                .next()
+                .unwrap_or_default()
+                .parse::<u64>()
+                .map_err(|_| TunnelError::MalformedStatus("WireGuard keepalive interval".into()))?
+        };
         let endpoint = if fields[2] == "(none)" {
             None
         } else {
@@ -664,17 +687,12 @@ pub fn parse_wg_all_dump(
     for line in dump.lines() {
         let fields = line.split('\t').collect::<Vec<_>>();
         match fields.as_slice() {
-            [interface, private_key, public_key, listen_port, fwmark] => {
-                if blocks.len() >= MAX_WG_INTERFACES || blocks.contains_key(*interface) {
-                    return Err(TunnelError::ResourceLimit {
-                        resource: "WireGuard interfaces",
-                        limit: MAX_WG_INTERFACES,
-                    });
-                }
-                let block = format!("{private_key}\t{public_key}\t{listen_port}\t{fwmark}\n");
-                blocks.insert((*interface).to_owned(), block);
-                current_interface = Some((*interface).to_owned());
-            }
+            // A peer line is always the interface name plus eight fields.
+            // An interface line is the interface name plus four stock fields
+            // and `fwmark` (stock), or plus AmneziaWG's obfuscation
+            // parameters in between (see [`parse_wg_dump`]) — never the five
+            // fields a peer line has after its name, so the counts
+            // disambiguate.
             [interface, peer @ ..] if peer.len() == 8 => {
                 if current_interface.as_deref() != Some(*interface) {
                     return Err(TunnelError::MalformedStatus(
@@ -686,6 +704,20 @@ pub fn parse_wg_all_dump(
                 })?;
                 block.push_str(&peer.join("\t"));
                 block.push('\n');
+            }
+            [interface, private_key, public_key, listen_port, rest @ ..]
+                if rest.len() == 1 || rest.len() >= 6 =>
+            {
+                if blocks.len() >= MAX_WG_INTERFACES || blocks.contains_key(*interface) {
+                    return Err(TunnelError::ResourceLimit {
+                        resource: "WireGuard interfaces",
+                        limit: MAX_WG_INTERFACES,
+                    });
+                }
+                let fwmark = rest[rest.len() - 1];
+                let block = format!("{private_key}\t{public_key}\t{listen_port}\t{fwmark}\n");
+                blocks.insert((*interface).to_owned(), block);
+                current_interface = Some((*interface).to_owned());
             }
             _ => {
                 return Err(TunnelError::MalformedStatus(
@@ -780,18 +812,8 @@ impl WgTunnel {
         })
     }
 
-    /// Protocol-owned read-only observation used by the scanner.
-    pub fn observe_interface(interface_name: &str) -> Result<WgStatus, TunnelError> {
-        observe_interface_with_generation(
-            WgTools::default().show,
-            interface_name,
-            0,
-            Duration::from_secs(2),
-        )
-    }
-
-    /// `[``Self::observe_interface``]` for a toolchain other than stock
-    /// `WireGuard`'s.
+    /// Protocol-owned read-only observation used by the scanner, for any
+    /// toolchain.
     pub fn observe_interface_with(
         show: &str,
         interface_name: &str,
@@ -799,13 +821,7 @@ impl WgTunnel {
         observe_interface_with_generation(show, interface_name, 0, Duration::from_secs(2))
     }
 
-    #[must_use]
-    pub fn interface_exists(interface_name: &str) -> bool {
-        Self::observe_interface(interface_name).is_ok()
-    }
-
-    /// `[``Self::interface_exists``]` for a toolchain other than stock
-    /// `WireGuard`'s.
+    /// Whether the toolchain's status binary reports this interface.
     #[must_use]
     pub fn interface_exists_with(show: &str, interface_name: &str) -> bool {
         Self::observe_interface_with(show, interface_name).is_ok()
@@ -1583,7 +1599,10 @@ impl WgTunnel {
                 stderr = %stderr.trim(),
                 "wg.down.failed"
             );
-            return Err(TunnelError::Subprocess(format!("WireGuard down: {stderr}")));
+            return Err(TunnelError::Subprocess(format!(
+                "{} down: {stderr}",
+                self.tools.quick
+            )));
         }
 
         if wait_for_interface_absence(
@@ -2579,6 +2598,41 @@ mod tests {
             statuses["awg0"].peers[0].persistent_keepalive,
             Some(Duration::from_secs(25))
         );
+    }
+
+    #[test]
+    fn awg_extended_dump_parses_through_the_same_evidence_path() {
+        // Field layout from amnezia-wg-tools' dump_print: the interface line
+        // carries the obfuscation parameters between the stock fields and the
+        // trailing fwmark; a peer's keepalive may print as a range.
+        let observed = SystemTime::now();
+        let single = concat!(
+            "priv\tpub\t51820\t4\t40\t70\t15\t16\t12\t12\t100-200\t300-400\t",
+            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0-0\t",
+            "0-0\t0-0\t0-0\t0-0\t0-0\toff\toff\toff\n",
+            "peer-key\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t22-30\n",
+        );
+        let parsed = parse_wg_dump("awg0", single, observed, 3).unwrap();
+        assert_eq!(parsed.interface_public_key, "pub");
+        assert_eq!(parsed.peers.len(), 1);
+        assert_eq!(
+            parsed.peers[0].persistent_keepalive,
+            Some(Duration::from_secs(22))
+        );
+
+        let all = concat!(
+            "awg0\tpriv\tpub\t51820\t4\t40\t70\t15\t16\t12\t12\t100-200\t300-400\t",
+            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0-0\t",
+            "0-0\t0-0\t0-0\t0-0\t0-0\toff\toff\toff\n",
+            "awg0\tpeer-key\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t22-30\n",
+        );
+        let statuses = parse_wg_all_dump(all, observed, 3).unwrap();
+        assert_eq!(statuses["awg0"].peers[0].bytes_rx, 12);
+
+        // A peer without allowed IPs prints `(none)` there, like endpoints.
+        let none_routes = "priv\tpub\t51820\toff\npeer\t(none)\t(none)\t(none)\t999\t0\t0\toff\n";
+        let parsed = parse_wg_dump("awg0", none_routes, observed, 3).unwrap();
+        assert!(parsed.peers[0].allowed_routes.is_empty());
     }
 
     #[test]

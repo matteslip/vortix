@@ -109,8 +109,21 @@ pub fn load(config_dir: &Path, profile_id: &ProfileId) -> Option<ManagedWireGuar
 /// record and fresh protocol evidence before adopting or mutating a tunnel.
 #[must_use]
 pub fn tracked_wireguard_pids(config_dir: &Path) -> Vec<u32> {
+    // A receipt belongs to either WireGuard-family toolchain; resolve the
+    // PID through whichever runtime owns the interface.
     tracked_wireguard_pids_with(config_dir, |interface| {
-        crate::platform::Interface::get_wireguard_pid(interface)
+        [
+            crate::wireguard::tunnel::WgTools::default(),
+            crate::amneziawg::tools(),
+        ]
+        .into_iter()
+        .find_map(|tools| {
+            crate::platform::Interface::get_wireguard_pid_in(
+                interface,
+                tools.run_dir,
+                tools.process_needle,
+            )
+        })
     })
 }
 

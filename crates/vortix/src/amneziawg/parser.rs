@@ -13,10 +13,22 @@ use crate::wireguard::parser::WgParsedProfile;
 
 /// `[Interface]` keys `AmneziaWG` 1.x ("Legacy" in the current app) adds:
 /// junk packets and header overrides.
-const LEGACY_KEYS: &[&str] = &["Jc", "Jmin", "Jmax", "S1", "S2", "H1", "H2", "H3", "H4"];
-/// Keys `AmneziaWG` 2.0 adds: padding on every packet type and the CPS
-/// signature packets `I1`–`I5`.
-const V2_KEYS: &[&str] = &["S3", "S4", "I1", "I2", "I3", "I4", "I5"];
+const LEGACY_KEYS: &[&str] = &[
+    "Jc",
+    "Jmin",
+    "Jmax",
+    "S1",
+    "S2",
+    "S3",
+    "S4",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+    "AdvancedSecurity",
+];
+/// Keys `AmneziaWG` 2.0 adds: the CPS signature packets `I1`–`I5`.
+const V2_KEYS: &[&str] = &["I1", "I2", "I3", "I4", "I5"];
 /// Keys `AmneziaWG` 3.x adds: header protection, content padding and
 /// randomized protocol timers.
 const V3_KEYS: &[&str] = &[
@@ -71,7 +83,7 @@ pub struct AwgParsedProfile {
     pub obfuscation_keys: Vec<String>,
 }
 
-/// Whether a `.conf` body carries AmneziaWG-only keys and so cannot run on
+/// Whether a `.conf` body carries `AmneziaWG`-only keys and so cannot run on
 /// stock `wg-quick`.
 #[must_use]
 pub fn looks_like_amnezia(text: &str) -> bool {
@@ -85,7 +97,7 @@ fn amnezia_key_of(line: &str) -> Option<AwgGeneration> {
     if line.is_empty() || line.starts_with(['#', ';']) {
         return None;
     }
-    let (key, _) = line.split_once('=')?;
+    let (key, value) = line.split_once('=')?;
     let key = key.trim();
     let in_group = |group: &[&str]| {
         group
@@ -93,14 +105,25 @@ fn amnezia_key_of(line: &str) -> Option<AwgGeneration> {
             .any(|candidate| key.eq_ignore_ascii_case(candidate))
     };
     if in_group(V3_KEYS) {
-        Some(AwgGeneration::V3)
-    } else if in_group(V2_KEYS) {
-        Some(AwgGeneration::V2)
-    } else if in_group(LEGACY_KEYS) {
-        Some(AwgGeneration::Legacy)
-    } else {
-        None
+        return Some(AwgGeneration::V3);
     }
+    if in_group(V2_KEYS) {
+        return Some(AwgGeneration::V2);
+    }
+    if in_group(LEGACY_KEYS) {
+        return Some(AwgGeneration::Legacy);
+    }
+    // A `PersistentKeepalive` range (`25-45`) is AWG 3 peer syntax; stock
+    // `WireGuard` takes one integer.
+    if key.eq_ignore_ascii_case("PersistentKeepalive")
+        && value
+            .split(['#', ';'])
+            .next()
+            .is_some_and(|value| value.trim().contains('-'))
+    {
+        return Some(AwgGeneration::V3);
+    }
+    None
 }
 
 /// Parse an `AmneziaWG` `.conf` body: the stock `WireGuard` fields plus the
@@ -163,6 +186,12 @@ mod tests {
         let v2 = "[Interface]\nJc = 4\nS3 = 12\nS4 = 12\nI1 = <b 0xd100000001><rc 8><t><r 50>\n";
         let parsed = parse_awg_conf(v2).unwrap();
         assert_eq!(parsed.generation, Some(AwgGeneration::V2));
+        // S3/S4 alone are 1.x keys; they do not raise the generation.
+        let s34 = "[Interface]\nS3 = 12\nS4 = 12\n";
+        assert_eq!(
+            parse_awg_conf(s34).unwrap().generation,
+            Some(AwgGeneration::Legacy)
+        );
 
         let v3 = "[Interface]\nJc = 4\nHeaderProtectionKey = abc\n\
                   ContentPaddingAddition = 10-50\nRekeyAfterTime = 100-200\n";
@@ -184,13 +213,24 @@ mod tests {
         assert!(looks_like_amnezia("[Interface]\njc = 3\n"));
         assert!(looks_like_amnezia("[Interface]\nHEADERPROTECTIONKEY = k\n"));
         assert!(!looks_like_amnezia("# Jc = 3 explained in a comment\n"));
-        assert!(!looks_like_amenzia_marker());
+        // A directive that merely carries an AmneziaWG-looking word inside
+        // another value must not trip detection.
+        assert!(!looks_like_amnezia("[Interface]\nDNS = jc.example.com\n"));
     }
 
-    fn looks_like_amenzia_marker() -> bool {
-        // A directive that merely mentions an AmneziaWG key inside another
-        // key's name must not trip detection.
-        looks_like_amnezia("[Interface]\nDNS = jc.example.com\n")
+    #[test]
+    fn ranged_keepalive_marks_v3() {
+        assert!(looks_like_amnezia(
+            "[Interface]\nPrivateKey = x\n[Peer]\nPersistentKeepalive = 25-45\n"
+        ));
+        assert_eq!(
+            parse_awg_conf("[Peer]\nPersistentKeepalive = 25-45\n")
+                .unwrap()
+                .generation,
+            Some(AwgGeneration::V3)
+        );
+        // A plain keepalive stays stock WireGuard.
+        assert!(!looks_like_amnezia("[Peer]\nPersistentKeepalive = 25\n"));
     }
 
     #[test]

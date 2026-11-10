@@ -519,6 +519,10 @@ pub(crate) fn load_profiles_from(profiles_dir: &Path) -> Vec<VpnProfile> {
         .iter()
         .filter(|p| matches!(p.protocol, ProtocolKind::WireGuard))
         .count();
+    let awg_count = profiles
+        .iter()
+        .filter(|p| matches!(p.protocol, ProtocolKind::AmneziaWg))
+        .count();
     let ovpn_count = profiles
         .iter()
         .filter(|p| matches!(p.protocol, ProtocolKind::OpenVpn))
@@ -528,9 +532,10 @@ pub(crate) fn load_profiles_from(profiles_dir: &Path) -> Vec<VpnProfile> {
         LogLevel::Info,
         "PROFILE",
         format!(
-            "Loaded {} profiles ({} WireGuard, {} OpenVPN{})",
+            "Loaded {} profiles ({} WireGuard, {} AmneziaWG, {} OpenVPN{})",
             profiles.len(),
             wg_count,
+            awg_count,
             ovpn_count,
             if errors > 0 {
                 format!(", {errors} skipped")

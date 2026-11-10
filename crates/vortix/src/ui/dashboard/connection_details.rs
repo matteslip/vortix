@@ -368,14 +368,19 @@ fn render_transitional(frame: &mut Frame, app: &App, inner: Rect, snap: &TunnelV
 
     let (headline, headline_color) = match snap.phase {
         Phase::Starting => {
-            let wireguard = app
+            let handshaking = app
                 .runtime
                 .profiles
                 .iter()
                 .find(|profile| profile.id == snap.profile_id)
-                .is_some_and(|profile| profile.protocol == ProtocolKind::WireGuard);
+                .is_some_and(|profile| {
+                    matches!(
+                        profile.protocol,
+                        ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+                    )
+                });
             (
-                if wireguard {
+                if handshaking {
                     "Handshaking"
                 } else {
                     "Connecting"
@@ -683,7 +688,10 @@ fn fwmark_warning_line(app: &App, snap: &TunnelView) -> Option<Line<'static>> {
         .profiles
         .iter()
         .find(|p| p.id == snap.profile_id)?;
-    if profile.protocol != ProtocolKind::WireGuard {
+    if !matches!(
+        profile.protocol,
+        ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+    ) {
         return None;
     }
 
