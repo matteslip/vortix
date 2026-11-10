@@ -4,7 +4,9 @@ members = ["crates/vortix", "crates/xtask"]
 default-members = ["crates/vortix"]
 
 [workspace.package]
-version = "0.6.0"
+# Build metadata marks fork builds carrying the AmneziaWG adapter;
+# semver-wise this stays 0.6.0 (release-plz and dependents sort it equal).
+version = "0.6.0+amneziawg"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
