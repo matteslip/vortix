@@ -4,7 +4,9 @@
 //! `push "redirect-gateway def1"` does NOT replace the kernel's default
 //! route. Instead it inserts two more-specific /1 routes (0.0.0.0/1 and
 //! 128.0.0.0/1) that together cover all of IPv4 and out-prioritise the
-//! original default. `route get default` reports the kernel's default-
+//! original default (Vortix's own v4 claim decomposes further, leaving
+//! 0.0.0.0/8 on the physical interface; see `control::plan`). `route get
+//! default` reports the kernel's default-
 //! route slot — which `def1` deliberately leaves on the original
 //! interface (`en0`) — even though actual internet-bound packets flow
 //! through `utun*`. Querying a public-internet target makes the kernel
