@@ -199,6 +199,18 @@ pub(crate) mod route_probe {
     }
 }
 
+/// Whether a v4 default-route claim decomposes past the classic pair of
+/// `/1` halves, leaving `0.0.0.0/8` uncovered so a lookup for `0.0.0.0`
+/// still finds the physical default. On macOS that anchor is what a mesh
+/// client with interface-bound transport sockets (`NetBird`'s `IP_BOUND_IF`,
+/// netbird#5918) uses to send its transport outside a full tunnel; on Linux
+/// mesh daemons escape through their own routing marks instead, and the
+/// classic pair keeps full-tunnel semantics strict.
+#[cfg(target_os = "macos")] // xtask:allow-platform-cfg: the anchor trick is macOS-only (see control::plan)
+pub const DECOMPOSED_V4_DEFAULT_CLAIM: bool = true;
+#[cfg(target_os = "linux")] // xtask:allow-platform-cfg: mesh daemons escape via marks here, keep the strict pair
+pub const DECOMPOSED_V4_DEFAULT_CLAIM: bool = false;
+
 /// Directory a confined `wg-quick` is permitted to read configs from, when
 /// the platform confines it at all.
 ///

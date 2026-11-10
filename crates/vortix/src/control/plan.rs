@@ -129,12 +129,40 @@ fn first_host(addr: IpAddr, prefix_len: u8) -> IpAddr {
     }
 }
 
-fn default_halves(v4: bool) -> [Cidr; 2] {
-    let parse = |value: &str| value.parse::<Cidr>().expect("fixed default half");
-    if v4 {
-        [parse("0.0.0.0/1"), parse("128.0.0.0/1")]
+/// The routes a default-route claim installs in place of the physical
+/// default, which stays: more-specific routes outrank it without replacing
+/// it.
+///
+/// The classic pair of `/1` halves covers each address family completely. On
+/// macOS the v4 claim decomposes further and leaves `0.0.0.0/8` uncovered:
+/// a route lookup for `0.0.0.0` then still resolves to the physical
+/// interface, which is the anchor a mesh client with interface-bound
+/// transport sockets (`NetBird`'s `IP_BOUND_IF`, netbird#5918) uses to send
+/// its own encrypted transport outside the tunnel while every destination
+/// keeps flowing through it. IPv6 keeps the strict pair: decomposing it the
+/// same way would strand `::/8` — NAT64 among it — outside a full tunnel.
+fn default_claim(v4: bool) -> Vec<Cidr> {
+    let parse = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| value.parse::<Cidr>().expect("fixed default claim"))
+            .collect()
+    };
+    if v4 && crate::platform::DECOMPOSED_V4_DEFAULT_CLAIM {
+        parse(&[
+            "1.0.0.0/8",
+            "2.0.0.0/7",
+            "4.0.0.0/6",
+            "8.0.0.0/5",
+            "16.0.0.0/4",
+            "32.0.0.0/3",
+            "64.0.0.0/2",
+            "128.0.0.0/1",
+        ])
+    } else if v4 {
+        parse(&["0.0.0.0/1", "128.0.0.0/1"])
     } else {
-        [parse("::/1"), parse("8000::/1")]
+        parse(&["::/1", "8000::/1"])
     }
 }
 
@@ -167,8 +195,8 @@ pub fn plan(input: &PlanInput) -> NetworkPlan {
         .collect::<BTreeMap<_, _>>();
     for (owner, v4) in [(primary, true), (primary_v6, false)] {
         if let Some(owner) = owner {
-            for half in default_halves(v4) {
-                routes.insert(half, owner.interface.clone());
+            for claim in default_claim(v4) {
+                routes.insert(claim, owner.interface.clone());
             }
         }
     }
@@ -299,13 +327,15 @@ pub(crate) mod tests {
         assert!(primaries <= 1, "at most one DNS primary: {plan:?}");
         if let Some(owner) = newest(tunnels, |tunnel| tunnel.claims_default(true)) {
             assert_eq!(plan.primary.as_ref(), Some(&owner.profile_id));
-            for half in default_halves(true) {
-                assert_eq!(plan.routes.get(&half), Some(&owner.interface));
+            for claim in default_claim(true) {
+                assert_eq!(plan.routes.get(&claim), Some(&owner.interface));
             }
             assert_eq!(primaries, usize::from(!owner.dns.is_empty()));
         } else {
             assert_eq!(plan.primary, None);
-            assert!(!plan.routes.contains_key(&cidr("0.0.0.0/1")));
+            for claim in default_claim(true) {
+                assert!(!plan.routes.contains_key(&claim));
+            }
             assert_eq!(primaries, 0);
         }
         for tunnel in tunnels.iter().filter(|tunnel| tunnel.is_full()) {
@@ -354,7 +384,44 @@ pub(crate) mod tests {
         ]);
         let plan = plan(&input);
         assert_eq!(plan.primary, Some(ProfileId::new("03")));
-        assert_eq!(plan.routes[&cidr("0.0.0.0/1")], "utun6");
+        assert_eq!(plan.routes[&cidr("128.0.0.0/1")], "utun6");
+        assert_invariants(&input, &plan);
+    }
+
+    #[test]
+    fn the_v4_claim_matches_the_platform_strategy() {
+        // On macOS the claim decomposes past the /1 pair and leaves
+        // 0.0.0.0/8 uncovered: a lookup for 0.0.0.0 must still find the
+        // physical default, which is what a mesh client's interface-bound
+        // transport sockets (NetBird's IP_BOUND_IF) anchor on. Everywhere
+        // else the strict pair keeps full-tunnel semantics exact.
+        let input = input(vec![live("01", "utun4", FULL, 1)]);
+        let plan = plan(&input);
+        let claims = default_claim(true);
+        assert_eq!(
+            plan.routes
+                .keys()
+                .filter(|route| route.addr.is_ipv4() && route.prefix_len <= 8)
+                .count(),
+            claims.len()
+        );
+        if crate::platform::DECOMPOSED_V4_DEFAULT_CLAIM {
+            assert_eq!(claims.first(), Some(&cidr("1.0.0.0/8")));
+            for claim in &claims {
+                assert!(!claim.intersects(&cidr("0.0.0.0/8")));
+            }
+            // A probe for the zero octet finds no planned route: the
+            // physical default answers it.
+            assert!(!plan
+                .routes
+                .keys()
+                .any(|route| route.intersects(&cidr("0.0.0.0/8"))));
+        } else {
+            assert_eq!(claims.first(), Some(&cidr("0.0.0.0/1")));
+            assert!(cidr("0.0.0.0/1").intersects(&cidr("0.0.0.0/8")));
+        }
+        // IPv6 keeps the strict pair on every platform.
+        assert_eq!(default_claim(false), vec![cidr("::/1"), cidr("8000::/1")]);
         assert_invariants(&input, &plan);
     }
 
