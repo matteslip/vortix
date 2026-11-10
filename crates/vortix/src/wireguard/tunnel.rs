@@ -204,12 +204,20 @@ pub(crate) fn strip_dns_directive(text: &str) -> String {
     out
 }
 
-/// The copy `wg-quick` reads: no `DNS`; long `AllowedIPs` split (its parser is slow on long lines).
+/// The copy `wg-quick` reads: no `DNS`; long `AllowedIPs` split (its parser is slow on long lines);
+/// on macOS, `Table = off` unless the profile set one, so the planner stays
+/// the sole route installer and a quick tool's own `/1` pair cannot cover
+/// the `0.0.0.0/8` anchor hole (see [`crate::platform::WG_QUICK_DEFERS_ROUTES`]).
 fn staged_body(text: &str) -> String {
     use std::fmt::Write as _;
     const PER_LINE: usize = 32;
-    let mut out = String::with_capacity(text.len());
-    for line in strip_dns_directive(text).split_inclusive('\n') {
+    let stripped = strip_dns_directive(text);
+    let defer_routes = crate::platform::WG_QUICK_DEFERS_ROUTES
+        && !stripped.lines().any(|line| {
+            line.trim_start().to_ascii_lowercase().starts_with("table") && line.contains('=')
+        });
+    let mut out = String::with_capacity(stripped.len());
+    for line in stripped.split_inclusive('\n') {
         let split = line.split_once('=').filter(|(key, value)| {
             key.trim().eq_ignore_ascii_case("AllowedIPs") && !value.contains(['#', ';'])
         });
@@ -229,6 +237,12 @@ fn staged_body(text: &str) -> String {
         for chunk in routes.chunks(PER_LINE) {
             let _ = writeln!(out, "{} = {}", key.trim(), chunk.join(", "));
         }
+    }
+    if defer_routes {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("Table = off\n");
     }
     out
 }
@@ -1826,6 +1840,21 @@ mod tests {
         assert!(out.contains("PrivateKey = abc"));
         assert!(out.contains("MTU = 1420"));
         assert!(out.contains("[Peer]"));
+    }
+
+    #[test]
+    fn staged_body_defers_routes_to_the_planner_on_macos() {
+        let body = "[Interface]\nPrivateKey = abc\nAddress = 10.0.0.2/24\n\n[Peer]\nPublicKey = xyz\nAllowedIPs = 0.0.0.0/0\n";
+        let staged = staged_body(body);
+        if crate::platform::WG_QUICK_DEFERS_ROUTES {
+            assert!(staged.contains("Table = off"), "{staged}");
+        } else {
+            assert!(!staged.contains("Table = off"), "{staged}");
+        }
+        // A profile that set its own Table keeps it: no duplicate directive.
+        let own = "[Interface]\nPrivateKey = abc\nTable = 500\n[Peer]\nPublicKey = xyz\nAllowedIPs = 10.0.0.0/8\n";
+        let staged = staged_body(own);
+        assert_eq!(staged.matches("Table").count(), 1, "{staged}");
     }
 
     #[test]

@@ -76,8 +76,9 @@ pub enum Firewall {
 pub struct NetworkPlan {
     /// Owner of the IPv4 default route.
     pub primary: Option<ProfileId>,
-    /// Kernel routes: CIDR → interface. A default claim becomes its two `/1`
-    /// halves, which outrank the physical `/0` without replacing it.
+    /// Kernel routes: CIDR → interface. A default claim becomes its claim
+    /// prefixes (see [`default_claim`]), which outrank the physical `/0`
+    /// without replacing it.
     pub routes: BTreeMap<Cidr, String>,
     /// Server addresses pinned to the physical gateway so a full tunnel's own
     /// transport never loops into a tunnel.
@@ -190,13 +191,24 @@ pub fn plan(input: &PlanInput) -> NetworkPlan {
         }
     }
     let mut routes = owners
-        .into_iter()
-        .map(|(cidr, owner)| (cidr, owner.interface.clone()))
+        .iter()
+        .map(|(cidr, owner)| (*cidr, owner.interface.clone()))
         .collect::<BTreeMap<_, _>>();
     for (owner, v4) in [(primary, true), (primary_v6, false)] {
         if let Some(owner) = owner {
             for claim in default_claim(v4) {
-                routes.insert(claim, owner.interface.clone());
+                // A claim key another tunnel declared exactly keeps that
+                // tunnel's route when it names a slice more specific than
+                // the classic halves: the kernel holds one route per prefix,
+                // and the tunnel naming the exact slice carries the sharper
+                // intent. A tunnel declaring a whole half (/1) is fighting
+                // for the default lane, where the primary wins as before.
+                let contended = owners
+                    .get(&claim)
+                    .is_some_and(|declared| !declared.claims_default(v4) && claim.prefix_len > 1);
+                if !contended {
+                    routes.insert(claim, owner.interface.clone());
+                }
             }
         }
     }
@@ -386,6 +398,26 @@ pub(crate) mod tests {
         assert_eq!(plan.primary, Some(ProfileId::new("03")));
         assert_eq!(plan.routes[&cidr("128.0.0.0/1")], "utun6");
         assert_invariants(&input, &plan);
+    }
+
+    #[test]
+    fn a_claim_never_steals_a_split_tunnel_s_exact_prefix() {
+        // A split tunnel naming exactly one of the decomposed claim keys
+        // (here the first, whatever the platform strategy) keeps its route.
+        let claim = default_claim(true)[0];
+        let split_case = input(vec![
+            live("01", "utun4", FULL, 1),
+            live("02", "utun5", "1.0.0.0/8", 2),
+        ]);
+        let split_plan = plan(&split_case);
+        assert_eq!(split_plan.routes[&claim], "utun5");
+        // A def1-style contender still loses the claim to the primary.
+        let def1_case = input(vec![
+            live("01", "utun4", FULL, 1),
+            live("03", "utun6", "128.0.0.0/1", 3),
+        ]);
+        let def1_plan = plan(&def1_case);
+        assert_eq!(def1_plan.routes[&cidr("128.0.0.0/1")], "utun4");
     }
 
     #[test]

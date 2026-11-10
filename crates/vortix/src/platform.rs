@@ -199,6 +199,16 @@ pub(crate) mod route_probe {
     }
 }
 
+/// Whether staged `wg-quick` configs set `Table = off`, making the planner
+/// the sole route installer. On macOS that keeps a quick tool's own classic
+/// `/1` pair from covering the `0.0.0.0/8` hole the decomposed claim leaves
+/// for mesh transport anchoring (see `control::plan`); on Linux the quick
+/// tool's fwmark-based policy routing coexists with the planner's routes.
+#[cfg(target_os = "macos")] // xtask:allow-platform-cfg: the planner owns routes on macOS (see control::plan)
+pub const WG_QUICK_DEFERS_ROUTES: bool = true;
+#[cfg(target_os = "linux")] // xtask:allow-platform-cfg: fwmark policy routing coexists here
+pub const WG_QUICK_DEFERS_ROUTES: bool = false;
+
 /// Whether a v4 default-route claim decomposes past the classic pair of
 /// `/1` halves, leaving `0.0.0.0/8` uncovered so a lookup for `0.0.0.0`
 /// still finds the physical default. On macOS that anchor is what a mesh
