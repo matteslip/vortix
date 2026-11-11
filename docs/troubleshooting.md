@@ -64,6 +64,10 @@ letters, numbers, `_`, `.` or `-`. Rename the file (`work.conf`) and import it a
 and any preshared key, and that UDP to the server is not blocked. `sudo wg show` shows what the
 kernel sees.
 
+**`WireGuard probe routes` fails.** Vortix could not apply the network policy needed to
+send the handshake probe through the new interface. Check the accompanying network-settings
+error and retry. A stopped route coordinator requires restarting Vortix.
+
 **"Fwmark hijack risk".** See [the Role line](usage.md#connection-details-the-role-line).
 
 **Linux desktop: "Activation of network connection failed".** Harmless. NetworkManager adopts

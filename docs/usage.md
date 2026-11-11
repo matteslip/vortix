@@ -232,6 +232,12 @@ destination keeps routing through it (`wg-quick` is held to `Table = off` there 
 management connections open before it binds its sockets, and those follow whatever routes
 are in place. IPv6 stays strictly claimed (`::/8` carries NAT64).
 
+On macOS, for a WireGuard peer without `PersistentKeepalive`, the planner installs temporary host
+routes to its configured health targets before the handshake probe. The tunnel stays
+handshaking until it has fresh evidence; its full routes and DNS apply afterward. These
+probe routes are removed on failure or replaced by the connected plan. Split prefixes more
+specific than `/1` keep their traffic even when a decomposed default claim is more specific.
+
 ### Connecting at boot
 
 ```bash

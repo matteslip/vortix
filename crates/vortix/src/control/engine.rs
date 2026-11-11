@@ -14,7 +14,7 @@ use crate::hooks::{HookEvent, HookEventId, LifecycleFact};
 use crate::openvpn::tunnel::OpenVpnStaticChallengeCredentials;
 use crate::platform::DefaultRouteObservation;
 use crate::profile::{ProfileId, ProtocolKind};
-use crate::tunnel::{TunnelCancellation, TunnelExecutionContext};
+use crate::tunnel::{TunnelCancellation, TunnelExecutionContext, TunnelProgress};
 use crate::wireguard::ownership::TunnelOwnershipStore;
 
 use super::net::Net;
@@ -49,7 +49,11 @@ pub(super) enum Event {
     /// A dropped tunnel's teardown finished.
     Drained { profile_id: ProfileId },
     /// A connect in progress needs the user, e.g. to log in.
-    Progress { profile_id: ProfileId, text: String },
+    Progress {
+        profile_id: ProfileId,
+        cancellation: TunnelCancellation,
+        progress: TunnelProgress,
+    },
 }
 
 enum Wait {
@@ -315,8 +319,33 @@ impl Engine {
                 Event::Stopped { profile_id, result } => self.stopped(&profile_id, result),
                 Event::Scanned { result, started } => self.scanned(result, started),
                 Event::Drained { profile_id } => self.drained(&profile_id),
-                Event::Progress { profile_id, text } => {
-                    self.actions.insert(profile_id, text);
+                Event::Progress {
+                    profile_id,
+                    cancellation,
+                    progress,
+                } => {
+                    if cancellation.is_cancelled() {
+                        return;
+                    }
+                    match progress {
+                        TunnelProgress::Text(text) => {
+                            self.actions.insert(profile_id, text);
+                        }
+                        TunnelProgress::ProbeRoutes {
+                            interface,
+                            targets,
+                            applied,
+                        } => {
+                            let result = self
+                                .state
+                                .prepare_probe_routes(&profile_id, interface, &targets)
+                                .and_then(|()| {
+                                    self.reconcile();
+                                    self.apply_error.clone().map_or(Ok(()), Err)
+                                });
+                            let _ = applied.send(result);
+                        }
+                    }
                 }
             },
             Msg::Settle(_) | Msg::Shutdown => {}
@@ -889,14 +918,16 @@ impl Engine {
         let tx = self.tx.clone();
         let profile_id = profile_id.clone();
         // `start` blocks, so what it reports on the way arrives through here.
-        let (progress, reports) = mpsc::channel::<String>();
+        let (progress, reports) = mpsc::channel::<TunnelProgress>();
         let forward = self.tx.clone();
         let reporting = profile_id.clone();
+        let reporting_cancel = cancel.clone();
         std::thread::spawn(move || {
-            for text in reports {
+            for progress in reports {
                 let _ = forward.send(Msg::Event(Box::new(Event::Progress {
                     profile_id: reporting.clone(),
-                    text,
+                    cancellation: reporting_cancel.clone(),
+                    progress,
                 })));
             }
         });
@@ -908,11 +939,12 @@ impl Engine {
                 generation,
                 credentials,
                 TunnelExecutionContext {
-                    cancellation: cancel,
+                    cancellation: cancel.clone(),
                     deadline: Instant::now() + timeout,
                     progress: Some(progress),
                 },
             );
+            cancel.cancel();
             let _ = tx.send(Msg::Event(Box::new(Event::Started {
                 profile_id,
                 result,

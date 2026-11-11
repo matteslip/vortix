@@ -853,6 +853,9 @@ impl WgTunnel {
             .map_or(local_deadline, |context| {
                 local_deadline.min(context.deadline)
             });
+        if crate::platform::WG_QUICK_DEFERS_ROUTES && !probes.is_empty() {
+            self.prepare_handshake_routes(handle, probes, deadline)?;
+        }
         let mut receipts = Vec::with_capacity(probes.len());
         for probe in probes {
             if self.cancellation_requested() {
@@ -899,6 +902,54 @@ impl WgTunnel {
     fn ensure_probe_route(target: IpAddr, owned_interface: &str) -> Result<(), TunnelError> {
         let observation = crate::platform::Routes::route_interface_for(target);
         verify_probe_route(observation, target, owned_interface)
+    }
+
+    fn prepare_handshake_routes(
+        &self,
+        handle: &TunnelHandle,
+        probes: &[ProbePlan],
+        deadline: Instant,
+    ) -> Result<(), TunnelError> {
+        if self.cancellation_requested() {
+            return Err(TunnelError::Cancelled);
+        }
+        let Some(progress) = self
+            .execution_context
+            .as_ref()
+            .and_then(|context| context.progress.as_ref())
+        else {
+            return Ok(());
+        };
+        let (applied, result) = std::sync::mpsc::sync_channel(1);
+        progress
+            .send(crate::tunnel::TunnelProgress::ProbeRoutes {
+                interface: handle.interface_name.clone(),
+                targets: probes.iter().map(|probe| probe.target).collect(),
+                applied,
+            })
+            .map_err(|_| TunnelError::Other("tunnel route coordinator stopped".into()))?;
+        loop {
+            if self.cancellation_requested() {
+                return Err(TunnelError::Cancelled);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TunnelError::Timeout(self.handshake_timeout));
+            }
+            match result.recv_timeout(remaining.min(Duration::from_millis(50))) {
+                Ok(result) => {
+                    return result.map_err(|error| {
+                        TunnelError::Other(format!("WireGuard probe routes: {error}"))
+                    })
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(TunnelError::Other(
+                        "tunnel route coordinator stopped".into(),
+                    ));
+                }
+            }
+        }
     }
 
     /// Fence a failed `wg-quick up` against the exact interface derived from
@@ -2393,6 +2444,49 @@ mod tests {
         let plan = tunnel.handshake_plan(&parsed).unwrap();
         assert_eq!(plan.expected, BTreeSet::from(["peer".to_string()]));
         assert!(plan.probes.is_empty());
+    }
+
+    #[test]
+    fn handshake_waits_for_the_route_coordinator_and_propagates_its_error() {
+        for outcome in [Ok(()), Err("route installation failed".to_string())] {
+            let (progress, requests) = std::sync::mpsc::channel();
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let tunnel = WgTunnel::new().with_execution_context(TunnelExecutionContext {
+                cancellation: crate::tunnel::TunnelCancellation::default(),
+                deadline,
+                progress: Some(progress),
+            });
+            let parsed =
+                parse_wg_conf("[Peer]\nPublicKey = peer\nAllowedIPs = 0.0.0.0/0\n").unwrap();
+            let plan = tunnel.handshake_plan(&parsed).unwrap();
+            let expected_targets = plan
+                .probes
+                .iter()
+                .map(|probe| probe.target)
+                .collect::<Vec<_>>();
+            let reply = outcome.clone();
+            std::thread::scope(|scope| {
+                scope.spawn(move || {
+                    let crate::tunnel::TunnelProgress::ProbeRoutes {
+                        interface,
+                        targets,
+                        applied,
+                    } = requests.recv_timeout(Duration::from_secs(1)).unwrap()
+                    else {
+                        panic!("expected probe route request");
+                    };
+                    assert_eq!(interface, "utun4");
+                    assert_eq!(targets, expected_targets);
+                    applied.send(reply).unwrap();
+                });
+                let result = tunnel.prepare_handshake_routes(
+                    &wg_handle("utun4", None),
+                    &plan.probes,
+                    deadline,
+                );
+                assert_eq!(result.is_ok(), outcome.is_ok());
+            });
+        }
     }
 
     #[test]
