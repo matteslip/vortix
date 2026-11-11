@@ -199,6 +199,28 @@ pub(crate) mod route_probe {
     }
 }
 
+/// Whether staged `wg-quick` configs set `Table = off`, making the planner
+/// the sole route installer. On macOS that keeps a quick tool's own classic
+/// `/1` pair from covering the `0.0.0.0/8` hole the decomposed claim leaves
+/// for mesh transport anchoring (see `control::plan`); on Linux the quick
+/// tool's fwmark-based policy routing coexists with the planner's routes.
+#[cfg(target_os = "macos")] // xtask:allow-platform-cfg: the planner owns routes on macOS (see control::plan)
+pub const WG_QUICK_DEFERS_ROUTES: bool = true;
+#[cfg(target_os = "linux")] // xtask:allow-platform-cfg: fwmark policy routing coexists here
+pub const WG_QUICK_DEFERS_ROUTES: bool = false;
+
+/// Whether a v4 default-route claim decomposes past the classic pair of
+/// `/1` halves, leaving `0.0.0.0/8` uncovered so a lookup for `0.0.0.0`
+/// still finds the physical default. On macOS that anchor is what a mesh
+/// client with interface-bound transport sockets (`NetBird`'s `IP_BOUND_IF`,
+/// netbird#5918) uses to send its transport outside a full tunnel; on Linux
+/// mesh daemons escape through their own routing marks instead, and the
+/// classic pair keeps full-tunnel semantics strict.
+#[cfg(target_os = "macos")] // xtask:allow-platform-cfg: the anchor trick is macOS-only (see control::plan)
+pub const DECOMPOSED_V4_DEFAULT_CLAIM: bool = true;
+#[cfg(target_os = "linux")] // xtask:allow-platform-cfg: mesh daemons escape via marks here, keep the strict pair
+pub const DECOMPOSED_V4_DEFAULT_CLAIM: bool = false;
+
 /// Directory a confined `wg-quick` is permitted to read configs from, when
 /// the platform confines it at all.
 ///

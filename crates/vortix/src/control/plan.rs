@@ -76,8 +76,9 @@ pub enum Firewall {
 pub struct NetworkPlan {
     /// Owner of the IPv4 default route.
     pub primary: Option<ProfileId>,
-    /// Kernel routes: CIDR → interface. A default claim becomes its two `/1`
-    /// halves, which outrank the physical `/0` without replacing it.
+    /// Kernel routes: CIDR → interface. A default claim becomes its claim
+    /// prefixes (see [`default_claim`]), which outrank the physical `/0`
+    /// without replacing it.
     pub routes: BTreeMap<Cidr, String>,
     /// Server addresses pinned to the physical gateway so a full tunnel's own
     /// transport never loops into a tunnel.
@@ -129,12 +130,40 @@ fn first_host(addr: IpAddr, prefix_len: u8) -> IpAddr {
     }
 }
 
-fn default_halves(v4: bool) -> [Cidr; 2] {
-    let parse = |value: &str| value.parse::<Cidr>().expect("fixed default half");
-    if v4 {
-        [parse("0.0.0.0/1"), parse("128.0.0.0/1")]
+/// The routes a default-route claim installs in place of the physical
+/// default, which stays: more-specific routes outrank it without replacing
+/// it.
+///
+/// The classic pair of `/1` halves covers each address family completely. On
+/// macOS the v4 claim decomposes further and leaves `0.0.0.0/8` uncovered:
+/// a route lookup for `0.0.0.0` then still resolves to the physical
+/// interface, which is the anchor a mesh client with interface-bound
+/// transport sockets (`NetBird`'s `IP_BOUND_IF`, netbird#5918) uses to send
+/// its own encrypted transport outside the tunnel while every destination
+/// keeps flowing through it. IPv6 keeps the strict pair: decomposing it the
+/// same way would strand `::/8` — NAT64 among it — outside a full tunnel.
+fn default_claim(v4: bool) -> Vec<Cidr> {
+    let parse = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| value.parse::<Cidr>().expect("fixed default claim"))
+            .collect()
+    };
+    if v4 && crate::platform::DECOMPOSED_V4_DEFAULT_CLAIM {
+        parse(&[
+            "1.0.0.0/8",
+            "2.0.0.0/7",
+            "4.0.0.0/6",
+            "8.0.0.0/5",
+            "16.0.0.0/4",
+            "32.0.0.0/3",
+            "64.0.0.0/2",
+            "128.0.0.0/1",
+        ])
+    } else if v4 {
+        parse(&["0.0.0.0/1", "128.0.0.0/1"])
     } else {
-        [parse("::/1"), parse("8000::/1")]
+        parse(&["::/1", "8000::/1"])
     }
 }
 
@@ -162,13 +191,24 @@ pub fn plan(input: &PlanInput) -> NetworkPlan {
         }
     }
     let mut routes = owners
-        .into_iter()
-        .map(|(cidr, owner)| (cidr, owner.interface.clone()))
+        .iter()
+        .map(|(cidr, owner)| (*cidr, owner.interface.clone()))
         .collect::<BTreeMap<_, _>>();
     for (owner, v4) in [(primary, true), (primary_v6, false)] {
         if let Some(owner) = owner {
-            for half in default_halves(v4) {
-                routes.insert(half, owner.interface.clone());
+            for claim in default_claim(v4) {
+                // A claim key another tunnel declared exactly keeps that
+                // tunnel's route when it names a slice more specific than
+                // the classic halves: the kernel holds one route per prefix,
+                // and the tunnel naming the exact slice carries the sharper
+                // intent. A tunnel declaring a whole half (/1) is fighting
+                // for the default lane, where the primary wins as before.
+                let contended = owners
+                    .get(&claim)
+                    .is_some_and(|declared| !declared.claims_default(v4) && claim.prefix_len > 1);
+                if !contended {
+                    routes.insert(claim, owner.interface.clone());
+                }
             }
         }
     }
@@ -299,13 +339,28 @@ pub(crate) mod tests {
         assert!(primaries <= 1, "at most one DNS primary: {plan:?}");
         if let Some(owner) = newest(tunnels, |tunnel| tunnel.claims_default(true)) {
             assert_eq!(plan.primary.as_ref(), Some(&owner.profile_id));
-            for half in default_halves(true) {
-                assert_eq!(plan.routes.get(&half), Some(&owner.interface));
+            for claim in default_claim(true) {
+                // A claim key yields only to an exact declaration sharper
+                // than a whole half, from a tunnel not fighting for the
+                // default (see the claim loop in plan).
+                let contended = tunnels.iter().any(|tunnel| {
+                    tunnel.routes.contains(&claim)
+                        && tunnel.profile_id != owner.profile_id
+                        && !tunnel.claims_default(true)
+                        && claim.prefix_len > 1
+                });
+                if contended {
+                    assert_ne!(plan.routes.get(&claim), Some(&owner.interface));
+                } else {
+                    assert_eq!(plan.routes.get(&claim), Some(&owner.interface));
+                }
             }
             assert_eq!(primaries, usize::from(!owner.dns.is_empty()));
         } else {
             assert_eq!(plan.primary, None);
-            assert!(!plan.routes.contains_key(&cidr("0.0.0.0/1")));
+            for claim in default_claim(true) {
+                assert!(!plan.routes.contains_key(&claim));
+            }
             assert_eq!(primaries, 0);
         }
         for tunnel in tunnels.iter().filter(|tunnel| tunnel.is_full()) {
@@ -354,7 +409,72 @@ pub(crate) mod tests {
         ]);
         let plan = plan(&input);
         assert_eq!(plan.primary, Some(ProfileId::new("03")));
-        assert_eq!(plan.routes[&cidr("0.0.0.0/1")], "utun6");
+        assert_eq!(plan.routes[&cidr("128.0.0.0/1")], "utun6");
+        assert_invariants(&input, &plan);
+    }
+
+    #[test]
+    fn a_claim_never_steals_a_split_tunnel_s_exact_prefix() {
+        // Only claims sharper than a classic half can be contended; on a
+        // platform with the strict pair this loop is empty and the yield
+        // rule cannot arise.
+        let split_case = input(vec![
+            live("01", "utun4", FULL, 1),
+            live("02", "utun5", "1.0.0.0/8", 2),
+        ]);
+        let split_plan = plan(&split_case);
+        // The exactly-declared prefix stays with its tunnel; every other
+        // claim — the neighbouring one and the classic half — belongs to
+        // the primary, whichever strategy the platform uses.
+        assert_eq!(split_plan.routes[&cidr("1.0.0.0/8")], "utun5");
+        assert_eq!(split_plan.routes[&cidr("128.0.0.0/1")], "utun4");
+        if crate::platform::DECOMPOSED_V4_DEFAULT_CLAIM {
+            assert_eq!(split_plan.routes[&cidr("2.0.0.0/7")], "utun4");
+        }
+        assert_invariants(&split_case, &split_plan);
+        // A def1-style contender still loses the claim to the primary.
+        let def1_case = input(vec![
+            live("01", "utun4", FULL, 1),
+            live("03", "utun6", "128.0.0.0/1", 3),
+        ]);
+        let def1_plan = plan(&def1_case);
+        assert_eq!(def1_plan.routes[&cidr("128.0.0.0/1")], "utun4");
+    }
+
+    #[test]
+    fn the_v4_claim_matches_the_platform_strategy() {
+        // On macOS the claim decomposes past the /1 pair and leaves
+        // 0.0.0.0/8 uncovered: a lookup for 0.0.0.0 must still find the
+        // physical default, which is what a mesh client's interface-bound
+        // transport sockets (NetBird's IP_BOUND_IF) anchor on. Everywhere
+        // else the strict pair keeps full-tunnel semantics exact.
+        let input = input(vec![live("01", "utun4", FULL, 1)]);
+        let plan = plan(&input);
+        let claims = default_claim(true);
+        assert_eq!(
+            plan.routes
+                .keys()
+                .filter(|route| route.addr.is_ipv4() && route.prefix_len <= 8)
+                .count(),
+            claims.len()
+        );
+        if crate::platform::DECOMPOSED_V4_DEFAULT_CLAIM {
+            assert_eq!(claims.first(), Some(&cidr("1.0.0.0/8")));
+            for claim in &claims {
+                assert!(!claim.intersects(&cidr("0.0.0.0/8")));
+            }
+            // A probe for the zero octet finds no planned route: the
+            // physical default answers it.
+            assert!(!plan
+                .routes
+                .keys()
+                .any(|route| route.intersects(&cidr("0.0.0.0/8"))));
+        } else {
+            assert_eq!(claims.first(), Some(&cidr("0.0.0.0/1")));
+            assert!(cidr("0.0.0.0/1").intersects(&cidr("0.0.0.0/8")));
+        }
+        // IPv6 keeps the strict pair on every platform.
+        assert_eq!(default_claim(false), vec![cidr("::/1"), cidr("8000::/1")]);
         assert_invariants(&input, &plan);
     }
 

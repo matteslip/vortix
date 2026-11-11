@@ -269,6 +269,14 @@ asked for on the terminal.
   share split routes stop the old one first.
 - Disconnecting one tunnel leaves the others alone.
 
+A full tunnel and a mesh network can also keep their transports apart. On macOS the
+full tunnel's IPv4 claim leaves `0.0.0.0/8` uncovered, so a lookup for `0.0.0.0` still
+finds the physical interface — the anchor `NetBird`'s interface-bound transport sockets
+(netbird#5918) use to carry their own encrypted traffic outside the tunnel while every
+destination keeps routing through it (`wg-quick` is held to `Table = off` there unless the profile sets its own `Table`, so the planner stays the sole route installer). Connect the mesh first when you can: its earliest
+management connections open before it binds its sockets, and those follow whatever routes
+are in place. IPv6 stays strictly claimed (`::/8` carries NAT64).
+
 ### Connecting at boot
 
 ```bash
