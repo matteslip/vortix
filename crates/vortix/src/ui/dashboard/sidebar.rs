@@ -87,7 +87,13 @@ fn status_sigil_id(
     match tunnel.phase {
         Phase::Up => SigilId::Connected,
         Phase::Starting => {
-            if matches!(protocol, Some(crate::profile::ProtocolKind::WireGuard)) {
+            if matches!(
+                protocol,
+                Some(
+                    crate::profile::ProtocolKind::WireGuard
+                        | crate::profile::ProtocolKind::AmneziaWg
+                )
+            ) {
                 SigilId::Handshaking
             } else {
                 SigilId::Connecting
@@ -238,6 +244,7 @@ fn profile_row(
 
     let proto_icon = match profile.protocol {
         crate::profile::ProtocolKind::WireGuard => "WG",
+        crate::profile::ProtocolKind::AmneziaWg => "AWG",
         crate::profile::ProtocolKind::OpenVpn => "OV",
         crate::profile::ProtocolKind::Mesh(driver) => driver.short(),
     };

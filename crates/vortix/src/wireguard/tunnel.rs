@@ -43,6 +43,43 @@ const MAX_WG_PROFILE_BYTES: usize = 1024 * 1024;
 const HANDSHAKE_FUTURE_TOLERANCE: Duration = Duration::from_secs(300);
 static NEXT_ATTEMPT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// The `wg-quick`-family toolchain a [`WgTunnel`] drives.
+///
+/// Stock `WireGuard` uses [`WgTools::default`]. A WireGuard-compatible stack
+/// such as `AmneziaWG` supplies its own names from the protocol module that
+/// owns them, so this struct carries only neutral fields and no vendor
+/// literals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WgTools {
+    /// The quick wrapper binary (`wg-quick` or its counterpart).
+    pub quick: &'static str,
+    /// The status binary (`wg` or its counterpart).
+    pub show: &'static str,
+    /// Where the userspace runtime writes `<name>.name`/`.sock` on macOS
+    /// (`/var/run/wireguard` for stock `WireGuard`); read by platform
+    /// interface resolution.
+    pub run_dir: &'static str,
+    /// Substring identifying the userspace daemon's process path, for PID
+    /// discovery (`wireguard` for stock `WireGuard`).
+    pub process_needle: &'static str,
+    /// Directory a confined quick tool may read staged configs from, when
+    /// the platform confines it at all (`None` stages in the session tmp
+    /// dir).
+    pub staging_dir: Option<&'static Path>,
+}
+
+impl Default for WgTools {
+    fn default() -> Self {
+        Self {
+            quick: "wg-quick",
+            show: "wg",
+            run_dir: crate::constants::WIREGUARD_RUN_DIR,
+            process_needle: "wireguard",
+            staging_dir: crate::platform::wireguard_staging_dir(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct WgTunnel {
     handshake_timeout: Duration,
@@ -51,6 +88,7 @@ pub struct WgTunnel {
     health_targets: Vec<IpAddr>,
     generation_override: Option<u64>,
     execution_context: Option<TunnelExecutionContext>,
+    tools: WgTools,
     /// Exact attempt capability retained across unwinding until `up` returns
     /// a trustworthy handle or proves absence.
     inflight: Option<Box<WgInflightAttempt>>,
@@ -78,6 +116,7 @@ impl Default for WgTunnel {
                 .collect(),
             generation_override: None,
             execution_context: None,
+            tools: WgTools::default(),
             inflight: None,
         }
     }
@@ -87,6 +126,19 @@ impl WgTunnel {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Drive a `wg-quick`-compatible toolchain other than stock `WireGuard`'s.
+    #[must_use]
+    pub fn with_tools(mut self, tools: WgTools) -> Self {
+        self.tools = tools;
+        self
+    }
+
+    /// The toolchain this tunnel drives.
+    #[must_use]
+    pub const fn tools(&self) -> WgTools {
+        self.tools
     }
 
     #[must_use]
@@ -342,18 +394,18 @@ fn write_managed_temp_config_at(
 /// Public wrapper used by `up()`: resolves the per-session tmp dir from the
 /// global journal `session_id`, then delegates to
 /// [`write_managed_temp_config_at`].
+///
+/// `staging_dir` comes from the toolchain: a quick tool the platform
+/// confines (Debian and Ubuntu ship an `AppArmor` profile for `wg-quick` that
+/// permits no config path outside `/etc/wireguard`) may only read its
+/// canonical directory, so the lifecycle copy goes there; anything else
+/// stages under the session tmp dir.
 fn write_managed_temp_config(
     user_conf_path: &Path,
     stripped_body: &[u8],
+    staging_dir: Option<&Path>,
 ) -> Result<PathBuf, TunnelError> {
-    // Debian and Ubuntu ship an AppArmor profile for wg-quick that permits no
-    // config path outside /etc/wireguard. Staging under the session tmp dir
-    // made the kernel deny the read — `apparmor="DENIED" operation="open"
-    // profile="wg-quick"` — and every WireGuard connect timed out with nothing
-    // in Vortix's own logs to explain it. The canonical directory is the only
-    // location a confined wg-quick can read, so on Linux that is where the
-    // lifecycle copy goes.
-    if let Some(directory) = crate::platform::wireguard_staging_dir() {
+    if let Some(directory) = staging_dir {
         return write_managed_config_in_wireguard_dir(directory, user_conf_path, stripped_body);
     }
     write_managed_temp_config_unconfined(user_conf_path, stripped_body)
@@ -376,7 +428,7 @@ fn write_managed_config_in_wireguard_dir(
         .create(directory)
         .map_err(|error| {
             TunnelError::Subprocess(format!(
-                "create {}: {error}. WireGuard needs this directory because wg-quick is confined to it.",
+                "create {}: {error}. The quick tool needs this directory because it is confined to it.",
                 directory.display()
             ))
         })?;
@@ -490,6 +542,13 @@ fn parse_unix_timestamp(
 }
 
 /// Parse the stable tab-separated `WireGuard` dump format.
+///
+/// `AmneziaWG`'s `awg show … dump` prints the same peer lines and the same
+/// leading interface fields, but inserts its obfuscation parameters between
+/// the stock interface fields and `fwmark`, which stays the last column; a
+/// peer's keepalive may print as a range (`22-30`). Both shapes parse here.
+/// A peer's `PersistentKeepalive` range reports its lower bound, and
+/// `(none)` in the `AllowedIPs` column reads as no routes.
 pub fn parse_wg_dump(
     interface_name: &str,
     dump: &str,
@@ -507,17 +566,20 @@ pub fn parse_wg_dump(
         .next()
         .ok_or_else(|| TunnelError::MalformedStatus("WireGuard dump was empty".into()))?;
     let fields = interface.split('\t').collect::<Vec<_>>();
-    if fields.len() != 4 {
+    if fields.len() < 4 {
         return Err(TunnelError::MalformedStatus(
             "WireGuard interface dump shape".into(),
         ));
     }
+    // `fwmark` closes the interface line in both shapes: stock at four
+    // fields, AmneziaWG after its obfuscation parameters.
+    let fwmark_field = fields[fields.len() - 1];
     let listen_port = fields[2]
         .parse::<u16>()
         .map_err(|_| TunnelError::MalformedStatus("WireGuard listen port".into()))?;
-    let fwmark_valid = fields[3].eq_ignore_ascii_case("off")
-        || fields[3].parse::<u32>().is_ok()
-        || fields[3]
+    let fwmark_valid = fwmark_field.eq_ignore_ascii_case("off")
+        || fwmark_field.parse::<u32>().is_ok()
+        || fwmark_field
             .strip_prefix("0x")
             .and_then(|value| u32::from_str_radix(value, 16).ok())
             .is_some();
@@ -543,26 +605,39 @@ pub fn parse_wg_dump(
                 "WireGuard peer dump shape".into(),
             ));
         }
-        let allowed_routes = fields[3]
-            .split(',')
-            .map(str::trim)
-            .filter(|route| !route.is_empty())
-            .map(|route| {
-                route
-                    .parse::<crate::cidr::Cidr>()
-                    .map(|_| route.to_string())
-                    .map_err(|_| TunnelError::MalformedStatus("WireGuard AllowedIPs".into()))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let allowed_routes = if fields[3] == "(none)" {
+            Vec::new()
+        } else {
+            fields[3]
+                .split(',')
+                .map(str::trim)
+                .filter(|route| !route.is_empty())
+                .map(|route| {
+                    route
+                        .parse::<crate::cidr::Cidr>()
+                        .map(|_| route.to_string())
+                        .map_err(|_| TunnelError::MalformedStatus("WireGuard AllowedIPs".into()))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let bytes_rx = fields[5]
             .parse()
             .map_err(|_| TunnelError::MalformedStatus("WireGuard receive counter".into()))?;
         let bytes_tx = fields[6]
             .parse()
             .map_err(|_| TunnelError::MalformedStatus("WireGuard transmit counter".into()))?;
-        let keepalive = fields[7]
-            .parse::<u64>()
-            .map_err(|_| TunnelError::MalformedStatus("WireGuard keepalive interval".into()))?;
+        // Stock `wg` prints seconds or `off`; AmneziaWG 3 may print a range
+        // (`22-30`), whose lower bound carries the interval.
+        let keepalive = if fields[7].eq_ignore_ascii_case("off") {
+            0
+        } else {
+            fields[7]
+                .split('-')
+                .next()
+                .unwrap_or_default()
+                .parse::<u64>()
+                .map_err(|_| TunnelError::MalformedStatus("WireGuard keepalive interval".into()))?
+        };
         let endpoint = if fields[2] == "(none)" {
             None
         } else {
@@ -612,17 +687,12 @@ pub fn parse_wg_all_dump(
     for line in dump.lines() {
         let fields = line.split('\t').collect::<Vec<_>>();
         match fields.as_slice() {
-            [interface, private_key, public_key, listen_port, fwmark] => {
-                if blocks.len() >= MAX_WG_INTERFACES || blocks.contains_key(*interface) {
-                    return Err(TunnelError::ResourceLimit {
-                        resource: "WireGuard interfaces",
-                        limit: MAX_WG_INTERFACES,
-                    });
-                }
-                let block = format!("{private_key}\t{public_key}\t{listen_port}\t{fwmark}\n");
-                blocks.insert((*interface).to_owned(), block);
-                current_interface = Some((*interface).to_owned());
-            }
+            // A peer line is always the interface name plus eight fields.
+            // An interface line is the interface name plus four stock fields
+            // and `fwmark` (stock), or plus AmneziaWG's obfuscation
+            // parameters in between (see [`parse_wg_dump`]) — never the five
+            // fields a peer line has after its name, so the counts
+            // disambiguate.
             [interface, peer @ ..] if peer.len() == 8 => {
                 if current_interface.as_deref() != Some(*interface) {
                     return Err(TunnelError::MalformedStatus(
@@ -634,6 +704,20 @@ pub fn parse_wg_all_dump(
                 })?;
                 block.push_str(&peer.join("\t"));
                 block.push('\n');
+            }
+            [interface, private_key, public_key, listen_port, rest @ ..]
+                if rest.len() == 1 || rest.len() >= 6 =>
+            {
+                if blocks.len() >= MAX_WG_INTERFACES || blocks.contains_key(*interface) {
+                    return Err(TunnelError::ResourceLimit {
+                        resource: "WireGuard interfaces",
+                        limit: MAX_WG_INTERFACES,
+                    });
+                }
+                let fwmark = rest[rest.len() - 1];
+                let block = format!("{private_key}\t{public_key}\t{listen_port}\t{fwmark}\n");
+                blocks.insert((*interface).to_owned(), block);
+                current_interface = Some((*interface).to_owned());
             }
             _ => {
                 return Err(TunnelError::MalformedStatus(
@@ -662,9 +746,10 @@ pub fn parse_wg_all_dump(
 }
 
 fn observe_all_interfaces_with(
+    show: &str,
     mut execute: impl FnMut(&CommandSpec) -> Result<Vec<u8>, TunnelError>,
 ) -> Result<BTreeMap<String, WgStatus>, TunnelError> {
-    let spec = CommandSpec::oneshot("wg", vec!["show".into(), "all".into(), "dump".into()])
+    let spec = CommandSpec::oneshot(show, vec!["show".into(), "all".into(), "dump".into()])
         .timeout(Duration::from_secs(2))
         .output_limit(MAX_WG_DUMP_BYTES);
     let stdout = execute(&spec)?;
@@ -675,6 +760,7 @@ fn observe_all_interfaces_with(
 }
 
 fn observe_interface_with_generation(
+    show: &str,
     interface_name: &str,
     generation: u64,
     timeout: Duration,
@@ -684,16 +770,18 @@ fn observe_interface_with_generation(
     }
     let output = crate::process::run(
         CommandSpec::oneshot(
-            "wg",
+            show,
             vec!["show".into(), interface_name.into(), "dump".into()],
         )
         .timeout(timeout.min(Duration::from_secs(2)))
         .output_limit(MAX_WG_DUMP_BYTES),
     )
-    .map_err(|error| TunnelError::Subprocess(format!("wg show {interface_name} dump: {error}")))?;
+    .map_err(|error| {
+        TunnelError::Subprocess(format!("{show} show {interface_name} dump: {error}"))
+    })?;
     if !output.success() {
         return Err(TunnelError::Subprocess(format!(
-            "wg show {interface_name} dump: {}",
+            "{show} show {interface_name} dump: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         )));
     }
@@ -704,14 +792,19 @@ fn observe_interface_with_generation(
 }
 
 impl WgTunnel {
-    /// One protocol-owned, bounded observation for every `WireGuard` interface.
-    pub fn observe_all_interfaces() -> Result<BTreeMap<String, WgStatus>, TunnelError> {
-        observe_all_interfaces_with(|spec| {
-            let output = crate::process::run(spec.clone())
-                .map_err(|error| TunnelError::Subprocess(format!("wg show all dump: {error}")))?;
+    /// One protocol-owned, bounded observation for every interface the
+    /// toolchain's status binary reports.
+    pub fn observe_all_interfaces(
+        tools: WgTools,
+    ) -> Result<BTreeMap<String, WgStatus>, TunnelError> {
+        let show = tools.show;
+        observe_all_interfaces_with(show, |spec| {
+            let output = crate::process::run(spec.clone()).map_err(|error| {
+                TunnelError::Subprocess(format!("{show} show all dump: {error}"))
+            })?;
             if !output.success() {
                 return Err(TunnelError::Subprocess(format!(
-                    "wg show all dump: {}",
+                    "{show} show all dump: {}",
                     String::from_utf8_lossy(&output.stderr).trim()
                 )));
             }
@@ -719,14 +812,19 @@ impl WgTunnel {
         })
     }
 
-    /// Protocol-owned read-only observation used by the scanner.
-    pub fn observe_interface(interface_name: &str) -> Result<WgStatus, TunnelError> {
-        observe_interface_with_generation(interface_name, 0, Duration::from_secs(2))
+    /// Protocol-owned read-only observation used by the scanner, for any
+    /// toolchain.
+    pub fn observe_interface_with(
+        show: &str,
+        interface_name: &str,
+    ) -> Result<WgStatus, TunnelError> {
+        observe_interface_with_generation(show, interface_name, 0, Duration::from_secs(2))
     }
 
+    /// Whether the toolchain's status binary reports this interface.
     #[must_use]
-    pub fn interface_exists(interface_name: &str) -> bool {
-        Self::observe_interface(interface_name).is_ok()
+    pub fn interface_exists_with(show: &str, interface_name: &str) -> bool {
+        Self::observe_interface_with(show, interface_name).is_ok()
     }
 
     /// Compensate an attempt interrupted by unwinding before a receipt was
@@ -739,10 +837,13 @@ impl WgTunnel {
         };
         let interface_name = resolve_kernel_iface(
             &attempt.interface_basename,
-            crate::platform::Interface::resolve_wireguard_interface(&attempt.interface_basename),
+            crate::platform::Interface::resolve_wireguard_interface_in(
+                &attempt.interface_basename,
+                self.tools.run_dir,
+            ),
             &attempt.profile_id,
         );
-        if !Self::interface_exists(&interface_name) {
+        if !Self::interface_exists_with(self.tools.show, &interface_name) {
             cleanup_managed_temp_config(&attempt.temp_path);
             return Ok(());
         }
@@ -766,7 +867,7 @@ impl WgTunnel {
             openvpn_routes: None,
         };
         self.down(&handle)?;
-        if wait_for_interface_absence(&interface_name, Duration::from_secs(2)) {
+        if wait_for_interface_absence(self.tools.show, &interface_name, Duration::from_secs(2)) {
             Ok(())
         } else {
             Err(TunnelError::OutcomeUnknown(format!(
@@ -894,10 +995,13 @@ impl WgTunnel {
         let basename = interface_from_path(&temp_path);
         let interface_name = resolve_kernel_iface(
             &basename,
-            crate::platform::Interface::resolve_wireguard_interface(&basename),
+            crate::platform::Interface::resolve_wireguard_interface_in(
+                &basename,
+                self.tools.run_dir,
+            ),
             &profile.id,
         );
-        let initially_exists = Self::interface_exists(&interface_name);
+        let initially_exists = Self::interface_exists_with(self.tools.show, &interface_name);
         let cleanup_path = temp_path.clone();
         let handle = TunnelHandle {
             profile_id: profile.id.clone(),
@@ -918,14 +1022,15 @@ impl WgTunnel {
             dns_request,
             openvpn_routes: None,
         };
+        let show = self.tools.show;
         settle_failed_attempt(
             original,
             &interface_name,
             initially_exists,
             || cleanup_managed_temp_config(&cleanup_path),
             || self.down(&handle),
-            || wait_for_interface_absence(&interface_name, Duration::from_secs(2)),
-            || wait_for_interface_presence(&interface_name, Duration::from_secs(2)),
+            || wait_for_interface_absence(show, &interface_name, Duration::from_secs(2)),
+            || wait_for_interface_presence(show, &interface_name, Duration::from_secs(2)),
         )
     }
 }
@@ -1038,12 +1143,12 @@ fn send_handshake_probe(target: IpAddr, timeout: Duration) -> std::io::Result<()
 /// interface the instant the command dies can therefore see nothing, skip
 /// teardown, and leave the daemon to finish starting — owning a `utun` with
 /// whatever routes it had installed, with no owner left to remove it.
-fn wait_for_interface_presence(interface_name: &str, timeout: Duration) -> bool {
+fn wait_for_interface_presence(show: &str, interface_name: &str, timeout: Duration) -> bool {
     let Some(deadline) = Instant::now().checked_add(timeout) else {
         return false;
     };
     loop {
-        if WgTunnel::interface_exists(interface_name) {
+        if WgTunnel::interface_exists_with(show, interface_name) {
             return true;
         }
         if Instant::now() >= deadline {
@@ -1053,12 +1158,12 @@ fn wait_for_interface_presence(interface_name: &str, timeout: Duration) -> bool 
     }
 }
 
-fn wait_for_interface_absence(interface_name: &str, timeout: Duration) -> bool {
+fn wait_for_interface_absence(show: &str, interface_name: &str, timeout: Duration) -> bool {
     let Some(deadline) = Instant::now().checked_add(timeout) else {
         return false;
     };
     loop {
-        if !WgTunnel::interface_exists(interface_name) {
+        if !WgTunnel::interface_exists_with(show, interface_name) {
             return true;
         }
         if Instant::now() >= deadline {
@@ -1211,12 +1316,17 @@ fn prepare_down_target_with(
     })
 }
 
-fn prepare_down_target(handle: &TunnelHandle) -> Result<PreparedDownTarget, TunnelError> {
-    prepare_down_target_with(handle, write_managed_temp_config)
+fn prepare_down_target(
+    handle: &TunnelHandle,
+    staging_dir: Option<&Path>,
+) -> Result<PreparedDownTarget, TunnelError> {
+    prepare_down_target_with(handle, |path, body| {
+        write_managed_temp_config(path, body, staging_dir)
+    })
 }
 
-fn wg_quick_down_spec(target: String) -> CommandSpec {
-    CommandSpec::oneshot("wg-quick", vec!["down".into(), target])
+fn wg_quick_down_spec(quick: &str, target: String) -> CommandSpec {
+    CommandSpec::oneshot(quick, vec!["down".into(), target])
         .privilege(PrivilegeReq::Root)
         .timeout(WG_QUICK_DOWN_TIMEOUT)
 }
@@ -1248,8 +1358,13 @@ impl WgTunnel {
             .map_or(Duration::from_secs(2), |context| {
                 context.deadline.saturating_duration_since(Instant::now())
             });
-        let baseline_status =
-            observe_interface_with_generation(&source_basename, generation, baseline_timeout).ok();
+        let baseline_status = observe_interface_with_generation(
+            self.tools.show,
+            &source_basename,
+            generation,
+            baseline_timeout,
+        )
+        .ok();
         let baseline = plan
             .expected
             .iter()
@@ -1280,7 +1395,11 @@ impl WgTunnel {
         // `wg-quick down` needs the same routes/hooks as `up`, and arbitrary
         // imported profiles are not discoverable through `/etc/wireguard` by
         // interface name alone.
-        let temp_path = write_managed_temp_config(&profile.config_path, stripped.as_bytes())?;
+        let temp_path = write_managed_temp_config(
+            &profile.config_path,
+            stripped.as_bytes(),
+            self.tools.staging_dir,
+        )?;
         let effective_path = temp_path.clone();
         let interface_basename = interface_from_path(&effective_path);
         debug_assert_eq!(interface_basename, explicit_interface_name);
@@ -1318,7 +1437,7 @@ impl WgTunnel {
             });
         }
         let output = crate::process::run(
-            CommandSpec::oneshot("wg-quick", vec!["up".into(), path_str.clone()])
+            CommandSpec::oneshot(self.tools.quick, vec!["up".into(), path_str.clone()])
                 .privilege(PrivilegeReq::Root)
                 .timeout(command_timeout),
         );
@@ -1332,7 +1451,7 @@ impl WgTunnel {
                     generation,
                     attempt_started,
                     dns_request,
-                    TunnelError::Subprocess(format!("wg-quick up: {error}")),
+                    TunnelError::Subprocess(format!("{} up: {error}", self.tools.quick)),
                 ));
             }
         };
@@ -1346,14 +1465,17 @@ impl WgTunnel {
                 generation,
                 attempt_started,
                 dns_request,
-                TunnelError::Subprocess(format!("wg-quick up: {stderr}")),
+                TunnelError::Subprocess(format!("{} up: {stderr}", self.tools.quick)),
             ));
         }
 
         let basename = interface_from_path(&effective_path);
         let interface_name = resolve_kernel_iface(
             &basename,
-            crate::platform::Interface::resolve_wireguard_interface(&basename),
+            crate::platform::Interface::resolve_wireguard_interface_in(
+                &basename,
+                self.tools.run_dir,
+            ),
             &profile.id,
         );
 
@@ -1397,6 +1519,7 @@ impl WgTunnel {
                 return Err(match cleanup {
                     Ok(())
                         if wait_for_interface_absence(
+                            self.tools.show,
                             &handle.interface_name,
                             Duration::from_secs(2),
                         ) =>
@@ -1415,7 +1538,7 @@ impl WgTunnel {
                 self.inflight = None;
                 let cleanup = self.down(&handle);
                 return Err(match cleanup {
-                    Ok(()) if wait_for_interface_absence(&handle.interface_name, Duration::from_secs(2)) => {
+                    Ok(()) if wait_for_interface_absence(self.tools.show, &handle.interface_name, Duration::from_secs(2)) => {
                         TunnelError::Other("WireGuard handshake worker panicked; attempt was cleaned up".into())
                     }
                     Ok(()) => TunnelError::OutcomeUnknown(
@@ -1440,9 +1563,10 @@ impl WgTunnel {
 
         // Teardown is idempotent only after platform-observed absence. This
         // lets the caller safely reconcile a handshake-timeout cleanup without
-        // replaying `wg-quick down` against an already-removed interface.
+        // replaying the quick tool's `down` against an already-removed
+        // interface.
         if !looks_like_config_path(&handle.interface_name)
-            && !Self::interface_exists(&handle.interface_name)
+            && !Self::interface_exists_with(self.tools.show, &handle.interface_name)
         {
             if let Some(config) = &handle.teardown_config {
                 if config.managed {
@@ -1452,14 +1576,15 @@ impl WgTunnel {
             return Ok(());
         }
 
-        let prepared = prepare_down_target(handle)?;
-        let output = crate::process::run(wg_quick_down_spec(prepared.target));
+        let prepared = prepare_down_target(handle, self.tools.staging_dir)?;
+        let output = crate::process::run(wg_quick_down_spec(self.tools.quick, prepared.target));
 
         if let Some(path) = &prepared.cleanup_after_attempt {
             cleanup_managed_temp_config(path);
         }
 
-        let output = output.map_err(|e| TunnelError::Subprocess(format!("wg-quick down: {e}")))?;
+        let output = output
+            .map_err(|e| TunnelError::Subprocess(format!("{} down: {e}", self.tools.quick)))?;
 
         if !output.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -1474,10 +1599,17 @@ impl WgTunnel {
                 stderr = %stderr.trim(),
                 "wg.down.failed"
             );
-            return Err(TunnelError::Subprocess(format!("WireGuard down: {stderr}")));
+            return Err(TunnelError::Subprocess(format!(
+                "{} down: {stderr}",
+                self.tools.quick
+            )));
         }
 
-        if wait_for_interface_absence(&handle.interface_name, Duration::from_secs(2)) {
+        if wait_for_interface_absence(
+            self.tools.show,
+            &handle.interface_name,
+            Duration::from_secs(2),
+        ) {
             if let Some(path) = &prepared.cleanup_after_success {
                 cleanup_managed_temp_config(path);
             }
@@ -1500,8 +1632,12 @@ impl WgTunnel {
             .map_or(Duration::from_secs(2), |context| {
                 context.deadline.saturating_duration_since(Instant::now())
             });
-        let detail =
-            observe_interface_with_generation(&handle.interface_name, handle.generation, timeout)?;
+        let detail = observe_interface_with_generation(
+            self.tools.show,
+            &handle.interface_name,
+            handle.generation,
+            timeout,
+        )?;
         let observed_at = detail
             .peers
             .first()
@@ -1937,7 +2073,7 @@ mod tests {
             write_managed_temp_config_at(&session, path, body)
         })
         .unwrap();
-        let spec = wg_quick_down_spec(prepared.target.clone());
+        let spec = wg_quick_down_spec(WgTools::default().quick, prepared.target.clone());
 
         assert_eq!(spec.program, "wg-quick");
         assert_eq!(spec.args, vec!["down", prepared.target.as_str()]);
@@ -1965,7 +2101,7 @@ mod tests {
             panic!("managed config must not be rewritten")
         })
         .unwrap();
-        let spec = wg_quick_down_spec(prepared.target);
+        let spec = wg_quick_down_spec(WgTools::default().quick, prepared.target);
 
         assert_eq!(spec.args, vec!["down", managed.to_string_lossy().as_ref()]);
         assert!(prepared.cleanup_after_attempt.is_none());
@@ -2117,7 +2253,7 @@ mod tests {
             panic!("interface-only teardown must not create a config")
         })
         .unwrap();
-        let spec = wg_quick_down_spec(prepared.target);
+        let spec = wg_quick_down_spec(WgTools::default().quick, prepared.target);
 
         assert_eq!(spec.args, vec!["down", "utun7"]);
     }
@@ -2437,6 +2573,75 @@ mod tests {
     }
 
     #[test]
+    fn amnezia_toolchain_spawns_the_awg_binaries() {
+        // AmneziaWG rides this lifecycle with its own binaries; the spec
+        // programs must follow the toolchain, not the stock names.
+        let tools = crate::amneziawg::tools();
+        let down = wg_quick_down_spec(tools.quick, "corp".into());
+        assert_eq!(down.program, "awg-quick");
+        assert_eq!(down.args, ["down", "corp"]);
+        let mut calls = 0;
+        let statuses = observe_all_interfaces_with(tools.show, |spec| {
+            calls += 1;
+            assert_eq!(spec.program, "awg");
+            assert_eq!(spec.args, ["show", "all", "dump"]);
+            Ok(concat!(
+                "awg0\tprivate0\tpublic0\t51820\toff\n",
+                "awg0\tpeer0\t(none)\t1.2.3.4:51820\t10.0.0.0/8\t900\t1\t2\t25\n",
+            )
+            .as_bytes()
+            .to_vec())
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(
+            statuses["awg0"].peers[0].persistent_keepalive,
+            Some(Duration::from_secs(25))
+        );
+    }
+
+    #[test]
+    fn awg_extended_dump_parses_through_the_same_evidence_path() {
+        // Field layout from amnezia-wg-tools' dump_print: the interface line
+        // carries the obfuscation parameters between the stock fields and the
+        // trailing fwmark; a peer's keepalive may print as a range.
+        let observed = SystemTime::now();
+        // Equal-bound ranges print as one integer (type.c), so the zeroed
+        // timer fields here are bare `0`s.
+        let single = concat!(
+            "priv\tpub\t51820\t4\t40\t70\t15\t16\t12\t12\t100-200\t300-400\t",
+            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0\t",
+            "0\t0\t0\t0\t0\toff\toff\toff\n",
+            "peer-key\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t22-30\n",
+        );
+        let parsed = parse_wg_dump("awg0", single, observed, 3).unwrap();
+        assert_eq!(parsed.interface_public_key, "pub");
+        assert_eq!(parsed.peers.len(), 1);
+        assert_eq!(
+            parsed.peers[0].persistent_keepalive,
+            Some(Duration::from_secs(22))
+        );
+
+        let all = concat!(
+            "awg0\tpriv\tpub\t51820\t4\t40\t70\t15\t16\t12\t12\t100-200\t300-400\t",
+            "500-600\t700-800\t(null)\t(null)\t(null)\t(null)\t(null)\t(none)\t0\t",
+            "0\t0\t0\t0\t0\toff\toff\toff\n",
+            "awg0\tpeer-key\t(none)\t198.51.100.7:51820\t10.8.0.0/24\t999\t12\t34\t22-30\n",
+        );
+        let statuses = parse_wg_all_dump(all, observed, 3).unwrap();
+        assert_eq!(statuses["awg0"].peers[0].bytes_rx, 12);
+        // An interface line with 6-8 fields matches no emitter's shape and
+        // must fail closed rather than guess a column.
+        let stunted = "awg0\tpriv\tpub\t51820\t1\t2\n";
+        assert!(parse_wg_all_dump(stunted, observed, 3).is_err());
+
+        // A peer without allowed IPs prints `(none)` there, like endpoints.
+        let none_routes = "priv\tpub\t51820\toff\npeer\t(none)\t(none)\t(none)\t999\t0\t0\toff\n";
+        let parsed = parse_wg_dump("awg0", none_routes, observed, 3).unwrap();
+        assert!(parsed.peers[0].allowed_routes.is_empty());
+    }
+
+    #[test]
     fn all_dump_maps_exact_interfaces_and_uses_one_command() {
         let dump = concat!(
             "wg0\tprivate0\tpublic0\t51820\toff\n",
@@ -2445,7 +2650,7 @@ mod tests {
             "wg1\tpeer1\t(none)\t(none)\t10.0.0.0/8\t0\t30\t40\t25\n",
         );
         let mut calls = 0;
-        let statuses = observe_all_interfaces_with(|spec| {
+        let statuses = observe_all_interfaces_with("wg", |spec| {
             calls += 1;
             assert_eq!(spec.program, "wg");
             assert_eq!(spec.args, ["show", "all", "dump"]);

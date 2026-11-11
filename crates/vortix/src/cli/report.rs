@@ -37,7 +37,7 @@ struct ReportInfo {
     config_dir: String,
     config_source: String,
     config_toml_status: String,
-    profile_counts: (u32, u32, u32),
+    profile_counts: (u32, u32, u32, u32),
     killswitch_state: String,
 }
 
@@ -321,8 +321,8 @@ fn parse_version_line(raw: &str) -> Option<String> {
 // ── Preview formatting ──────────────────────────────────────────────────────
 
 fn print_preview(info: &ReportInfo) {
-    let (wg, ovpn, mesh) = info.profile_counts;
-    let total = wg + ovpn + mesh;
+    let (wg, awg, ovpn, mesh) = info.profile_counts;
+    let total = wg + awg + ovpn + mesh;
 
     println!("Bug Report Preview");
     println!("==================\n");
@@ -354,7 +354,7 @@ fn print_preview(info: &ReportInfo) {
     println!("    config.toml: {}", info.config_toml_status);
     println!(
         "    Profiles:    {total} ({})",
-        super::profiles::profile_breakdown(wg, ovpn, mesh)
+        super::profiles::profile_breakdown(wg, awg, ovpn, mesh)
     );
     println!("    Kill switch: {}", info.killswitch_state);
     println!();
@@ -407,8 +407,8 @@ fn atty_is_terminal() -> bool {
 // ── Issue body formatting ───────────────────────────────────────────────────
 
 fn format_issue_body(info: &ReportInfo, description: &str) -> String {
-    let (wg, ovpn, mesh) = info.profile_counts;
-    let total = wg + ovpn + mesh;
+    let (wg, awg, ovpn, mesh) = info.profile_counts;
+    let total = wg + awg + ovpn + mesh;
 
     let mut body = String::with_capacity(2048);
 
@@ -477,7 +477,7 @@ fn format_issue_body(info: &ReportInfo, description: &str) -> String {
     let _ = writeln!(
         body,
         "Profiles:    {total} ({})",
-        super::profiles::profile_breakdown(wg, ovpn, mesh)
+        super::profiles::profile_breakdown(wg, awg, ovpn, mesh)
     );
     let _ = writeln!(body, "Kill switch: {}", info.killswitch_state);
     let _ = writeln!(body, "```\n");
@@ -736,7 +736,7 @@ mod tests {
             config_dir: "~/.config/vortix".to_string(),
             config_source: "default".to_string(),
             config_toml_status: "found".to_string(),
-            profile_counts: (2, 1, 0),
+            profile_counts: (2, 0, 1, 0),
             killswitch_state: "off".to_string(),
         };
 
@@ -765,7 +765,7 @@ mod tests {
             config_dir: "/root/.config/vortix".to_string(),
             config_source: "default".to_string(),
             config_toml_status: "not found (using defaults)".to_string(),
-            profile_counts: (0, 0, 0),
+            profile_counts: (0, 0, 0, 0),
             killswitch_state: "off".to_string(),
         };
 

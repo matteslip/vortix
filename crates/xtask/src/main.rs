@@ -296,15 +296,17 @@ fn check_protocol_leak() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         let allowed_names: &[&str] = if rel_str.starts_with("crates/vortix/src/wireguard/") {
-            &["openvpn", "netbird"]
+            &["openvpn", "netbird", "awg", "awg-quick"]
+        } else if rel_str.starts_with("crates/vortix/src/amneziawg/") {
+            &["wg", "wg-quick", "openvpn", "netbird"]
         } else if rel_str.starts_with("crates/vortix/src/openvpn/") {
-            &["wg", "wg-quick", "netbird"]
+            &["wg", "wg-quick", "netbird", "awg", "awg-quick"]
         } else if rel_str.starts_with("crates/vortix/src/mesh/") {
-            &["wg", "wg-quick", "openvpn"]
+            &["wg", "wg-quick", "openvpn", "awg", "awg-quick"]
         } else if rel_str.starts_with("crates/xtask/") {
             continue;
         } else {
-            &["wg", "wg-quick", "openvpn", "netbird"]
+            &["wg", "wg-quick", "openvpn", "netbird", "awg", "awg-quick"]
         };
 
         let Ok(content) = std::fs::read_to_string(path) else {

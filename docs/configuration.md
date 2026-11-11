@@ -116,7 +116,7 @@ timeout_secs = 5          # default 5, at most 60
 
 Hooks run as you, not root, after the change has happened, with a clean environment plus
 `VORTIX_EVENT`, `VORTIX_EVENT_ID`, `VORTIX_PROFILE_ID`, `VORTIX_PROFILE_NAME` and
-`VORTIX_PROTOCOL` (`wireguard`, `openvpn` or `netbird`). They cannot block or delay a connect, run at most once per event, and can be
+`VORTIX_PROTOCOL` (`wireguard`, `amneziawg`, `openvpn` or `netbird`). They cannot block or delay a connect, run at most once per event, and can be
 lost if Vortix crashes. Up to 64 hooks.
 
 ## DNS

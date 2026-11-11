@@ -31,6 +31,18 @@ server by device management, so the test network never connects there: on the Ma
 that refusal and S12 skips. A host runs only one NetBird daemon; the company service must be
 stopped (`sudo netbird service stop`, by the maintainer) before either runs.
 
+## AmneziaWG
+
+Any self-hosted AmneziaWG server works as the test peer; the lab does not run one, so use a
+disposable box made with `https://github.com/bivlked/amneziawg-installer` (or export a native
+`.conf` from an existing AmneziaVPN server) and destroy it after the run. Import the client
+`.conf` under a new name (`awg01`) — its obfuscation keys make detection automatic — and quit
+the AmneziaWG desktop app on the Mac first, since it owns the same `awg` runtime (on the Mac
+the upstream `awg-quick` darwin script also needs the patch from
+`docs/usage.md#amneziawg-profiles` before anything connects). Never print
+or commit the profile: it holds the private key. One generation per run is enough; 3.x
+exercises the newest keys (`HeaderProtectionKey`, timers), Legacy only the 1.x set.
+
 ## macOS
 
 Claude never runs `sudo` on the Mac. The user keeps a tmux session `vxrun` with two root

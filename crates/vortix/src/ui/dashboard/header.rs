@@ -296,6 +296,7 @@ fn connected_line(
         .find(|p| p.name == profile_name)
         .map_or("", |p| match p.protocol {
             crate::profile::ProtocolKind::WireGuard => "WG",
+            crate::profile::ProtocolKind::AmneziaWg => "AWG",
             crate::profile::ProtocolKind::OpenVpn => "OVPN",
             crate::profile::ProtocolKind::Mesh(driver) => driver.short(),
         });
@@ -396,7 +397,11 @@ fn render_primary_line(
                         .iter()
                         .find(|profile| profile.id == primary_snap.profile_id)
                         .is_some_and(|profile| {
-                            profile.protocol == crate::profile::ProtocolKind::WireGuard
+                            matches!(
+                                profile.protocol,
+                                crate::profile::ProtocolKind::WireGuard
+                                    | crate::profile::ProtocolKind::AmneziaWg
+                            )
                         }) =>
                 {
                     "HANDSHAKING"

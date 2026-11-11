@@ -233,8 +233,9 @@ impl crate::app::state::ProfileSortOrder {
                 fn proto_rank(p: ProtocolKind) -> u8 {
                     match p {
                         ProtocolKind::WireGuard => 0,
-                        ProtocolKind::OpenVpn => 1,
-                        ProtocolKind::Mesh(_) => 2,
+                        ProtocolKind::AmneziaWg => 1,
+                        ProtocolKind::OpenVpn => 2,
+                        ProtocolKind::Mesh(_) => 3,
                     }
                 }
                 profiles.sort_by(|a, b| {

@@ -5,7 +5,7 @@ pub use crate::linux::autoconnect;
 #[cfg(target_os = "linux")]
 pub use crate::linux::{
     clipboard_commands, desktop_env,
-    interface::{process_tun_device, tun_addresses, wireguard_started_at},
+    interface::{process_tun_device, tun_addresses, wireguard_started_at, wireguard_started_at_in},
     os_description, BROWSER_OPENER, FIREWALL_TOOL, NETBIRD_INTERFACE,
 };
 #[cfg(target_os = "linux")]
@@ -18,7 +18,7 @@ pub use crate::macos::autoconnect;
 #[cfg(target_os = "macos")]
 pub use crate::macos::{
     clipboard_commands, desktop_env,
-    interface::{process_tun_device, tun_addresses, wireguard_started_at},
+    interface::{process_tun_device, tun_addresses, wireguard_started_at, wireguard_started_at_in},
     os_description, BROWSER_OPENER, FIREWALL_TOOL, NETBIRD_INTERFACE,
 };
 #[cfg(target_os = "macos")]
@@ -340,6 +340,14 @@ pub fn install_hint(pkg: &str) -> String {
     match pkg {
         // NetBird's own tap carries the command without the desktop app.
         "netbird" => "brew install netbirdio/tap/netbird".to_string(),
+        // AmneziaWG ships no Homebrew formula; build the tools from source
+        // (plus the macOS patch in docs/usage.md#amneziawg-profiles).
+        "amnezia-wg" => "\
+brew install go bash  # awg-quick needs bash 4+\
+\ngit clone https://github.com/amnezia-vpn/amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/\
+\ngit clone https://github.com/amnezia-vpn/amneziawg-tools && cd src && make && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install\
+\n# then the macOS patch in docs/usage.md#amneziawg-profiles"
+            .to_string(),
         _ => format!("brew install {pkg}"),
     }
 }
@@ -427,6 +435,12 @@ sudo dnf install wireguard-tools  # Fedora"
             .to_string(),
         // NetBird's own installer adds its package repository.
         "netbird" => "curl -fsSL https://pkgs.netbird.io/install.sh | sh".to_string(),
+        // AmneziaWG has no distro packages outside AUR; build from source.
+        "amnezia-wg" => "\
+git clone https://github.com/amnezia-vpn/amneziawg-tools && cd src && make && sudo make WITH_WGQUICK=yes install  # awg, awg-quick\
+\ngit clone https://github.com/amnezia-vpn/amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/  # userspace driver\
+\n# or on Arch: yay -S amneziawg-tools amneziawg-dkms"
+            .to_string(),
         // OpenVPN ships under its eponymous package everywhere.
         "openvpn" => "\
 sudo apt install openvpn  # Debian/Ubuntu\n\
@@ -449,6 +463,10 @@ sudo dnf install {pkg}  # Fedora"
 fn vpn_tool(protocol: crate::profile::ProtocolKind) -> (&'static str, Vec<&'static str>) {
     match protocol {
         crate::profile::ProtocolKind::WireGuard => ("wireguard-tools", vec!["wg-quick", "wg"]),
+        crate::profile::ProtocolKind::AmneziaWg => (
+            "amnezia-wg",
+            vec![crate::amneziawg::QUICK, crate::amneziawg::SHOW],
+        ),
         crate::profile::ProtocolKind::OpenVpn => ("openvpn", vec!["openvpn"]),
         crate::profile::ProtocolKind::Mesh(driver) => (driver.slug(), vec![driver.slug()]),
     }
@@ -502,9 +520,9 @@ pub fn check_dependencies(
         .into_iter()
         .collect();
     match protocol {
-        crate::profile::ProtocolKind::WireGuard => {
-            // `DNS =` is stripped before wg-quick runs; Vortix applies it
-            // through `resolvectl`, else `resolvconf` (the same choice as
+        crate::profile::ProtocolKind::WireGuard | crate::profile::ProtocolKind::AmneziaWg => {
+            // `DNS =` is stripped before the quick tool runs; Vortix applies
+            // it through `resolvectl`, else `resolvconf` (the same choice as
             // `linux::dns`). A DNS profile with neither cannot be honoured.
             #[cfg(target_os = "linux")]
             // xtask:allow-platform-cfg: the gates below are Linux-only

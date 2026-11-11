@@ -4,6 +4,8 @@
 //! It provides profile management and an intuitive dashboard interface.
 #![allow(clippy::missing_errors_doc, clippy::implicit_hasher)]
 
+#[doc(hidden)]
+pub mod amneziawg;
 pub mod app;
 pub mod cidr;
 pub mod cli;

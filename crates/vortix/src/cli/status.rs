@@ -120,7 +120,10 @@ fn session_status(
     // non-zero handshake timestamp cannot recreate the current attempt
     // generation and ownership receipt.
     let mut status = SessionStatus {
-        connection_state: if matches!(proto, Some(ProtocolKind::WireGuard)) {
+        connection_state: if matches!(
+            proto,
+            Some(ProtocolKind::WireGuard | ProtocolKind::AmneziaWg)
+        ) {
             "handshaking"
         } else {
             "connected"
@@ -144,8 +147,12 @@ fn session_status(
         peers: session.details.peers.clone(),
         networks: session.details.networks.clone(),
     };
-    let Some(profile) = profile.filter(|profile| profile.protocol == ProtocolKind::WireGuard)
-    else {
+    let Some(profile) = profile.filter(|profile| {
+        matches!(
+            profile.protocol,
+            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+        )
+    }) else {
         return status;
     };
     let Some(mut receipt) = crate::wireguard::receipt::load(config_dir, &profile.id)
@@ -504,7 +511,7 @@ pub(super) fn human_status_headline(session: Option<&SessionStatus>) -> String {
                 _ => format!("● Connected to {profile} ({protocol})"),
             },
         ),
-        "handshaking" => format!("◐ Handshaking with {profile} (WireGuard)"),
+        "handshaking" => format!("◐ Handshaking with {profile} ({protocol})"),
         "connecting" => format!("◐ Connecting to {profile} (OpenVPN)"),
         "reconnecting" => format!("↻ Reconnecting to {profile} ({protocol})"),
         "disconnecting" => format!("◑ Disconnecting {profile} ({protocol})"),

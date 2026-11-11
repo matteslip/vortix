@@ -248,10 +248,15 @@ pub fn parse_wg_conf(text: &str) -> Result<WgParsedProfile, ParseError> {
                             }
                         }
                     } else if key.eq_ignore_ascii_case("PersistentKeepalive") {
+                        // AmneziaWG 3 randomizes the interval (`25-45`); its
+                        // lower bound carries the expectation. Such a config
+                        // is classified AmneziaWG at import, so stock
+                        // `wg-quick` never sees the range.
                         peer.persistent_keepalive = value
                             .split(['#', ';'])
                             .next()
-                            .and_then(|seconds| seconds.trim().parse::<u16>().ok())
+                            .and_then(|seconds| seconds.trim().split('-').next().map(str::trim))
+                            .and_then(|seconds| seconds.parse::<u16>().ok())
                             .filter(|seconds| *seconds > 0);
                     }
                 }
@@ -335,6 +340,15 @@ Endpoint = 203.0.113.5:51820
         assert_eq!(p.dns_servers, vec!["1.1.1.1", "8.8.8.8"]);
         assert_eq!(p.addresses, ["10.0.0.2/32"]);
         assert_eq!(p.mtu, Some(1420));
+    }
+
+    #[test]
+    fn ranged_keepalive_parses_to_its_lower_bound() {
+        let parsed = parse_wg_conf(
+            "[Interface]\nPrivateKey = private\n[Peer]\nPublicKey = peer\nAllowedIPs = 10.0.0.0/24\nPersistentKeepalive = 25-45\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.peers[0].persistent_keepalive, Some(25));
     }
 
     #[test]

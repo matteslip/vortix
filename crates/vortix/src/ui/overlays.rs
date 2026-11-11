@@ -1706,7 +1706,7 @@ pub mod import {
                     Style::default().fg(theme::current().nord_purple),
                 ),
                 Span::styled(
-                    format!(" → {}   ", crate::profile::ProtocolKind::WireGuard),
+                    " → WireGuard / AmneziaWG   ".to_string(),
                     Style::default().fg(theme::current().text_secondary),
                 ),
                 Span::styled(

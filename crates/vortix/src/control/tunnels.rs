@@ -167,7 +167,7 @@ pub fn adopt(
         return Ok(None);
     }
     match profile.protocol {
-        ProtocolKind::WireGuard => {
+        ProtocolKind::WireGuard | ProtocolKind::AmneziaWg => {
             let Ok(owned) = ownership.validate_wireguard(profile, session) else {
                 return Ok(None);
             };
@@ -189,7 +189,7 @@ pub fn adopt(
                 openvpn_routes: None,
             };
             Ok(Some(Live {
-                kind: TunnelKind::new(ProtocolKind::WireGuard, settings),
+                kind: TunnelKind::new(profile.protocol, settings),
                 handle,
             }))
         }
@@ -339,15 +339,19 @@ impl TunnelKind {
     pub fn new(protocol: ProtocolKind, settings: &Settings) -> Self {
         let config_dir = &settings.config_dir;
         match protocol {
-            ProtocolKind::WireGuard => Self::WireGuard(
-                WgTunnel::new().with_handshake_policy(
+            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg => {
+                let mut tunnel = WgTunnel::new().with_handshake_policy(
                     Duration::from_secs(settings.wireguard_handshake_timeout_secs),
                     settings
                         .wireguard_health_targets
                         .iter()
                         .filter_map(|target| target.parse().ok()),
-                ),
-            ),
+                );
+                if protocol == ProtocolKind::AmneziaWg {
+                    tunnel = tunnel.with_tools(crate::amneziawg::tools());
+                }
+                Self::WireGuard(tunnel)
+            }
             ProtocolKind::OpenVpn => Self::OpenVpn(OvpnTunnel::new(
                 config_dir.join(crate::constants::OPENVPN_RUN_DIR),
                 config_dir.join(crate::constants::OPENVPN_AUTH_DIR),

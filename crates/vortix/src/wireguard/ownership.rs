@@ -132,8 +132,10 @@ impl TunnelOwnershipStore {
         handshake: HandshakeEvidence,
         probe_receipts: Vec<ProbeReceipt>,
     ) -> Result<ValidatedWireGuardOwnership, OwnershipError> {
-        if profile.protocol != ProtocolKind::WireGuard
-            || revision.generation == 0
+        if !matches!(
+            profile.protocol,
+            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+        ) || revision.generation == 0
             || handshake.generation != revision.generation
             || interface_name.is_empty()
             || !teardown_config.managed
@@ -203,8 +205,10 @@ impl TunnelOwnershipStore {
                     .latest_handshake
                     .is_some_and(|value| value >= record.handshake.handshake_at)
         });
-        if profile.protocol != ProtocolKind::WireGuard
-            || record.boot_scope != self.boot_scope
+        if !matches!(
+            profile.protocol,
+            ProtocolKind::WireGuard | ProtocolKind::AmneziaWg
+        ) || record.boot_scope != self.boot_scope
             || record.owner_uid != self.owner_uid
             || record.tunnel_generation == 0
             || record.handshake.generation != record.tunnel_generation

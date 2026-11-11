@@ -10,6 +10,7 @@
 #[path = "../support/control_scenarios.rs"]
 mod control_scenarios;
 
+mod amneziawg_handshake_health;
 mod cli_profile_mutation;
 mod dns_policy;
 mod docs_match_code;
