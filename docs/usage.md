@@ -156,10 +156,11 @@ on Arch, `amneziawg-tools` and `amneziawg-dkms` are in the AUR):
 
 ```bash
 brew install go bash  # macOS only: awg-quick needs bash 4+ (macOS ships 3.2)
-git clone https://github.com/amnezia-vpn/amneziawg-go && cd amneziawg-go && make \
-  && sudo cp amneziawg-go /usr/local/bin/
-git clone https://github.com/amnezia-vpn/amneziawg-tools && cd amneziawg-tools/src && make \
-  && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install   # awg + awg-quick
+git clone https://github.com/amnezia-vpn/amneziawg-go \
+  && (cd amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/)
+git clone https://github.com/amnezia-vpn/amneziawg-tools \
+  && (cd amneziawg-tools/src && make \
+      && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install)   # awg + awg-quick
 ```
 
 Two more steps on macOS, where upstream's `awg-quick` darwin script still
@@ -169,6 +170,7 @@ v3.1.20260812; the original stays beside the script as
 `awg-quick.upstream-orig`):
 
 ```bash
+sudo cp /usr/local/bin/awg-quick /usr/local/bin/awg-quick.upstream-orig
 sudo sed -E -i '' -e 's|/var/run/wireguard|/var/run/amneziawg|g' \
   -e 's|^wg show|awg show|' -e 's|([^a-zA-Z_(])wg show|\1awg show|g' \
   -e 's|\(wg show|(awg show|g' \

@@ -344,8 +344,8 @@ pub fn install_hint(pkg: &str) -> String {
         // (plus the macOS patch in docs/usage.md#amneziawg-profiles).
         "amnezia-wg" => "\
 brew install go bash  # awg-quick needs bash 4+\
-\ngit clone https://github.com/amnezia-vpn/amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/\
-\ngit clone https://github.com/amnezia-vpn/amneziawg-tools && cd src && make && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install\
+\ngit clone https://github.com/amnezia-vpn/amneziawg-go && (cd amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/)\
+\ngit clone https://github.com/amnezia-vpn/amneziawg-tools && (cd amneziawg-tools/src && make && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install)\
 \n# then the macOS patch in docs/usage.md#amneziawg-profiles"
             .to_string(),
         _ => format!("brew install {pkg}"),
@@ -437,8 +437,8 @@ sudo dnf install wireguard-tools  # Fedora"
         "netbird" => "curl -fsSL https://pkgs.netbird.io/install.sh | sh".to_string(),
         // AmneziaWG has no distro packages outside AUR; build from source.
         "amnezia-wg" => "\
-git clone https://github.com/amnezia-vpn/amneziawg-tools && cd src && make && sudo make WITH_WGQUICK=yes install  # awg, awg-quick\
-\ngit clone https://github.com/amnezia-vpn/amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/  # userspace driver\
+git clone https://github.com/amnezia-vpn/amneziawg-tools && (cd amneziawg-tools/src && make && sudo make WITH_WGQUICK=yes install)  # awg, awg-quick\
+\ngit clone https://github.com/amnezia-vpn/amneziawg-go && (cd amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/)  # userspace driver\
 \n# or on Arch: yay -S amneziawg-tools amneziawg-dkms"
             .to_string(),
         // OpenVPN ships under its eponymous package everywhere.
