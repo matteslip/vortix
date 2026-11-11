@@ -340,7 +340,20 @@ pub(crate) mod tests {
         if let Some(owner) = newest(tunnels, |tunnel| tunnel.claims_default(true)) {
             assert_eq!(plan.primary.as_ref(), Some(&owner.profile_id));
             for claim in default_claim(true) {
-                assert_eq!(plan.routes.get(&claim), Some(&owner.interface));
+                // A claim key yields only to an exact declaration sharper
+                // than a whole half, from a tunnel not fighting for the
+                // default (see the claim loop in plan).
+                let contended = tunnels.iter().any(|tunnel| {
+                    tunnel.routes.contains(&claim)
+                        && tunnel.profile_id != owner.profile_id
+                        && !tunnel.claims_default(true)
+                        && claim.prefix_len > 1
+                });
+                if contended {
+                    assert_ne!(plan.routes.get(&claim), Some(&owner.interface));
+                } else {
+                    assert_eq!(plan.routes.get(&claim), Some(&owner.interface));
+                }
             }
             assert_eq!(primaries, usize::from(!owner.dns.is_empty()));
         } else {
@@ -402,15 +415,21 @@ pub(crate) mod tests {
 
     #[test]
     fn a_claim_never_steals_a_split_tunnel_s_exact_prefix() {
-        // A split tunnel naming exactly one of the decomposed claim keys
-        // (here the first, whatever the platform strategy) keeps its route.
-        let claim = default_claim(true)[0];
+        // Only claims sharper than a classic half can be contended; on a
+        // platform with the strict pair this loop is empty and the yield
+        // rule cannot arise.
         let split_case = input(vec![
             live("01", "utun4", FULL, 1),
             live("02", "utun5", "1.0.0.0/8", 2),
         ]);
         let split_plan = plan(&split_case);
-        assert_eq!(split_plan.routes[&claim], "utun5");
+        for claim in default_claim(true)
+            .iter()
+            .filter(|claim| claim.prefix_len > 1)
+        {
+            assert_eq!(split_plan.routes[claim], "utun5", "{claim}");
+        }
+        assert_invariants(&split_case, &split_plan);
         // A def1-style contender still loses the claim to the primary.
         let def1_case = input(vec![
             live("01", "utun4", FULL, 1),
