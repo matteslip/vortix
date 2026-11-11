@@ -122,7 +122,6 @@ pub const TELEMETRY_STALE_FLOOR_SECS: u64 = 90;
 // === Platform-Specific Paths ===
 
 /// macOS `WireGuard` runtime directory.
-#[cfg(target_os = "macos")]
 pub const WIREGUARD_RUN_DIR: &str = "/var/run/wireguard";
 
 // === Logging Defaults ===

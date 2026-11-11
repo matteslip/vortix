@@ -37,12 +37,12 @@ impl LinuxInterface {
     /// [`Self::get_wireguard_pid`] for a quick tool whose userspace daemon
     /// has a process path containing `needle` instead of "wireguard".
     #[must_use]
-    pub fn get_wireguard_pid_in(_interface: &str, _run_dir: &str, needle: &str) -> Option<u32> {
+    pub fn get_wireguard_pid_in(interface: &str, _run_dir: &str, needle: &str) -> Option<u32> {
         // walk /proc directly instead of shelling to `ps`.
         // Kernel WG has no userspace PID (returns None); a userspace
         // implementation has a process whose cmdline contains both the
         // needle and the interface name.
-        find_pid_with_cmdline_substrings(&[needle, _interface])
+        find_pid_with_cmdline_substrings(&[needle, interface])
     }
 
     #[must_use]
@@ -253,8 +253,8 @@ pub fn process_tun_device(_pid: u32) -> Option<String> {
 
 /// No file records when a `WireGuard` interface came up on Linux.
 #[must_use]
-pub fn wireguard_started_at(_name: &str) -> Option<std::time::SystemTime> {
-    wireguard_started_at_in(_name, crate::constants::WIREGUARD_RUN_DIR)
+pub fn wireguard_started_at(name: &str) -> Option<std::time::SystemTime> {
+    wireguard_started_at_in(name, crate::constants::WIREGUARD_RUN_DIR)
 }
 
 /// [`wireguard_started_at`] for a quick tool other than stock `wg-quick`;
