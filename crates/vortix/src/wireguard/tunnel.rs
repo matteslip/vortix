@@ -217,7 +217,18 @@ fn staged_body(text: &str) -> String {
             line.trim_start().to_ascii_lowercase().starts_with("table") && line.contains('=')
         });
     let mut out = String::with_capacity(stripped.len());
+    let mut table_injected = false;
     for line in stripped.split_inclusive('\n') {
+        // `Table` is a quick-tool directive parsed only inside the
+        // [Interface] section; injecting it at the end of the file would
+        // drop it into [Peer], where it leaks into `setconf` and is
+        // rejected. It goes right under the section header instead.
+        if defer_routes && !table_injected && line.trim().eq_ignore_ascii_case("[interface]") {
+            out.push_str(line);
+            out.push_str("Table = off\n");
+            table_injected = true;
+            continue;
+        }
         let split = line.split_once('=').filter(|(key, value)| {
             key.trim().eq_ignore_ascii_case("AllowedIPs") && !value.contains(['#', ';'])
         });
@@ -238,12 +249,10 @@ fn staged_body(text: &str) -> String {
             let _ = writeln!(out, "{} = {}", key.trim(), chunk.join(", "));
         }
     }
-    if defer_routes {
-        if !out.ends_with('\n') {
-            out.push('\n');
-        }
-        out.push_str("Table = off\n");
-    }
+    debug_assert!(
+        !defer_routes || table_injected,
+        "profile without an [Interface] header"
+    );
     out
 }
 
@@ -1848,6 +1857,11 @@ mod tests {
         let staged = staged_body(body);
         if crate::platform::WG_QUICK_DEFERS_ROUTES {
             assert!(staged.contains("Table = off"), "{staged}");
+            // Inside [Interface], never appended into [Peer], where a quick
+            // tool would leak the directive into setconf.
+            assert!(staged
+                .find("Table = off")
+                .is_some_and(|at| staged.find("[Peer]").is_some_and(|peer| at < peer)));
         } else {
             assert!(!staged.contains("Table = off"), "{staged}");
         }
