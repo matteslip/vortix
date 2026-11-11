@@ -423,11 +423,13 @@ pub(crate) mod tests {
             live("02", "utun5", "1.0.0.0/8", 2),
         ]);
         let split_plan = plan(&split_case);
-        for claim in default_claim(true)
-            .iter()
-            .filter(|claim| claim.prefix_len > 1)
-        {
-            assert_eq!(split_plan.routes[claim], "utun5", "{claim}");
+        // The exactly-declared prefix stays with its tunnel; every other
+        // claim — the neighbouring one and the classic half — belongs to
+        // the primary, whichever strategy the platform uses.
+        assert_eq!(split_plan.routes[&cidr("1.0.0.0/8")], "utun5");
+        assert_eq!(split_plan.routes[&cidr("128.0.0.0/1")], "utun4");
+        if crate::platform::DECOMPOSED_V4_DEFAULT_CLAIM {
+            assert_eq!(split_plan.routes[&cidr("2.0.0.0/7")], "utun4");
         }
         assert_invariants(&split_case, &split_plan);
         // A def1-style contender still loses the claim to the primary.
