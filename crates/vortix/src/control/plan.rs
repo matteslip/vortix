@@ -77,7 +77,7 @@ pub struct NetworkPlan {
     /// Owner of the IPv4 default route.
     pub primary: Option<ProfileId>,
     /// Kernel routes: CIDR → interface. A default claim becomes its claim
-    /// prefixes (see [`default_claim`]), which outrank the physical `/0`
+    /// prefixes, which outrank the physical `/0`
     /// without replacing it.
     pub routes: BTreeMap<Cidr, String>,
     /// Server addresses pinned to the physical gateway so a full tunnel's own
@@ -197,15 +197,13 @@ pub fn plan(input: &PlanInput) -> NetworkPlan {
     for (owner, v4) in [(primary, true), (primary_v6, false)] {
         if let Some(owner) = owner {
             for claim in default_claim(v4) {
-                // A claim key another tunnel declared exactly keeps that
-                // tunnel's route when it names a slice more specific than
-                // the classic halves: the kernel holds one route per prefix,
-                // and the tunnel naming the exact slice carries the sharper
-                // intent. A tunnel declaring a whole half (/1) is fighting
-                // for the default lane, where the primary wins as before.
-                let contended = owners
-                    .get(&claim)
-                    .is_some_and(|declared| !declared.claims_default(v4) && claim.prefix_len > 1);
+                // Decomposition must not outrank a split that beat the classic /1.
+                let contended = owners.iter().any(|(prefix, declared)| {
+                    prefix.prefix_len > 1
+                        && prefix.prefix_len <= claim.prefix_len
+                        && prefix.intersects(&claim)
+                        && !declared.claims_default(v4)
+                });
                 if !contended {
                     routes.insert(claim, owner.interface.clone());
                 }
@@ -340,14 +338,15 @@ pub(crate) mod tests {
         if let Some(owner) = newest(tunnels, |tunnel| tunnel.claims_default(true)) {
             assert_eq!(plan.primary.as_ref(), Some(&owner.profile_id));
             for claim in default_claim(true) {
-                // A claim key yields only to an exact declaration sharper
-                // than a whole half, from a tunnel not fighting for the
-                // default (see the claim loop in plan).
+                // A split that beat the classic /1 also beats its decomposition.
                 let contended = tunnels.iter().any(|tunnel| {
-                    tunnel.routes.contains(&claim)
-                        && tunnel.profile_id != owner.profile_id
+                    tunnel.profile_id != owner.profile_id
                         && !tunnel.claims_default(true)
-                        && claim.prefix_len > 1
+                        && tunnel.routes.iter().any(|prefix| {
+                            prefix.prefix_len > 1
+                                && prefix.prefix_len <= claim.prefix_len
+                                && prefix.intersects(&claim)
+                        })
                 });
                 if contended {
                     assert_ne!(plan.routes.get(&claim), Some(&owner.interface));
@@ -476,6 +475,32 @@ pub(crate) mod tests {
         // IPv6 keeps the strict pair on every platform.
         assert_eq!(default_claim(false), vec![cidr("::/1"), cidr("8000::/1")]);
         assert_invariants(&input, &plan);
+    }
+
+    #[test]
+    fn decomposed_claims_preserve_covering_split_prefixes() {
+        for prefix_len in 2..=8 {
+            let input = input(vec![
+                live("01", "utun4", FULL, 1),
+                live("02", "utun5", &format!("0.0.0.0/{prefix_len}"), 2),
+            ]);
+            let planned = plan(&input);
+            let target = cidr("0.1.1.1/32");
+            let public = cidr("1.1.1.1/32");
+            for host in [target, public]
+                .into_iter()
+                .filter(|host| cidr(&format!("0.0.0.0/{prefix_len}")).intersects(host))
+            {
+                let selected = planned
+                    .routes
+                    .iter()
+                    .filter(|(route, _)| route.intersects(&host))
+                    .max_by_key(|(route, _)| route.prefix_len)
+                    .unwrap();
+                assert_eq!(selected.1, "utun5", "{prefix_len}: {selected:?}");
+            }
+            assert_invariants(&input, &planned);
+        }
     }
 
     #[test]

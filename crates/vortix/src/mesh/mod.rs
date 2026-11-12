@@ -617,7 +617,7 @@ impl MeshTunnel {
                     if let Some(text) = sign_in(&line, profile) {
                         signing_in.store(true, Ordering::Release);
                         if let Some(progress) = progress {
-                            let _ = progress.send(text);
+                            let _ = progress.send(crate::tunnel::TunnelProgress::Text(text));
                         }
                     }
                 }

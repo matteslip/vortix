@@ -31,13 +31,24 @@ impl TunnelCancellation {
     }
 }
 
+/// Startup progress and requests for planner-owned probe routes.
+#[derive(Debug)]
+pub enum TunnelProgress {
+    Text(String),
+    ProbeRoutes {
+        interface: String,
+        targets: Vec<IpAddr>,
+        applied: std::sync::mpsc::SyncSender<Result<(), String>>,
+    },
+}
+
 /// Canonical bounds for one protocol mutation.
 #[derive(Debug, Clone)]
 pub struct TunnelExecutionContext {
     pub cancellation: TunnelCancellation,
     pub deadline: Instant,
     /// What the attempt needs the user to do meanwhile, such as a login link.
-    pub progress: Option<std::sync::mpsc::Sender<String>>,
+    pub progress: Option<std::sync::mpsc::Sender<TunnelProgress>>,
 }
 
 // ───────────────────────────────────────────────────────────────────────────

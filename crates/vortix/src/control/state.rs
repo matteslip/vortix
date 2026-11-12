@@ -79,6 +79,7 @@ pub enum Refusal {
 #[derive(Debug, Clone, Default)]
 pub struct State {
     tunnels: BTreeMap<ProfileId, Tunnel>,
+    probe_routes: BTreeMap<ProfileId, LiveTunnel>,
     pub kill_switch: KillSwitchMode,
 }
 
@@ -87,6 +88,7 @@ impl State {
     pub fn new(kill_switch: KillSwitchMode) -> Self {
         Self {
             tunnels: BTreeMap::new(),
+            probe_routes: BTreeMap::new(),
             kill_switch,
         }
     }
@@ -184,6 +186,7 @@ impl State {
         pushed_servers: impl IntoIterator<Item = IpAddr>,
         dns: Option<DnsRequest>,
     ) -> BTreeSet<ProfileId> {
+        self.probe_routes.remove(profile_id);
         let Some(tunnel) = self
             .tunnels
             .get_mut(profile_id)
@@ -221,6 +224,7 @@ impl State {
     /// A start attempt failed. A fresh connect is forgotten; a recovery waits
     /// for `retry_at`. Returns whether the tunnel is still tracked.
     pub fn start_failed(&mut self, profile_id: &ProfileId, retry_at: Option<Instant>) -> bool {
+        self.probe_routes.remove(profile_id);
         let Some(tunnel) = self.tunnels.get_mut(profile_id) else {
             return false;
         };
@@ -325,6 +329,7 @@ impl State {
 
     /// The tunnel is gone. Returns it when it asked to start again.
     pub fn stopped(&mut self, profile_id: &ProfileId) -> Option<Tunnel> {
+        self.probe_routes.remove(profile_id);
         self.tunnels
             .remove(profile_id)
             .filter(|tunnel| tunnel.restart)
@@ -351,6 +356,46 @@ impl State {
         }
     }
 
+    pub fn prepare_probe_routes(
+        &mut self,
+        profile_id: &ProfileId,
+        interface: String,
+        targets: &[IpAddr],
+    ) -> Result<(), String> {
+        let tunnel = self
+            .tunnels
+            .get(profile_id)
+            .filter(|tunnel| tunnel.phase == Phase::Starting)
+            .ok_or_else(|| "the tunnel is no longer starting".to_string())?;
+        let routes: BTreeSet<_> = targets.iter().copied().map(Cidr::host).collect();
+        if !crate::profile::is_safe_interface_name(&interface)
+            || routes.is_empty()
+            || routes.iter().any(|target| {
+                !tunnel
+                    .spec
+                    .routes
+                    .iter()
+                    .any(|route| route.intersects(target))
+            })
+        {
+            return Err("invalid tunnel probe routes".into());
+        }
+        self.probe_routes.insert(
+            profile_id.clone(),
+            LiveTunnel {
+                profile_id: profile_id.clone(),
+                interface,
+                routes,
+                server_ips: tunnel.spec.server_ips.clone(),
+                dns: DnsRequest::default(),
+                rank: tunnel.rank,
+                group: tunnel.spec.group,
+                mark: tunnel.spec.mark,
+            },
+        );
+        Ok(())
+    }
+
     #[must_use]
     pub fn plan_input(&self) -> PlanInput {
         let live = self
@@ -369,6 +414,16 @@ impl State {
                     mark: tunnel.spec.mark,
                 })
             })
+            .chain(
+                self.probe_routes
+                    .values()
+                    .filter(|probe| {
+                        self.tunnels
+                            .get(&probe.profile_id)
+                            .is_some_and(|tunnel| tunnel.phase == Phase::Starting)
+                    })
+                    .cloned(),
+            )
             .collect();
         // Tunnels still starting: their transport must get out before they are up.
         let pending: Vec<_> = self
@@ -501,6 +556,64 @@ mod tests {
                 servers: vec![IpAddr::from([10, 8, 0, 1])],
                 search_domains: Vec::new(),
             },
+        }
+    }
+
+    #[test]
+    fn handshake_probes_get_routes_and_firewall_access_before_full_claims_and_dns() {
+        let mut state = State::new(KillSwitchMode::AlwaysOn);
+        let id = ProfileId::new("01");
+        state
+            .begin(spec("01", "0.0.0.0/0"), 1, None, false)
+            .unwrap();
+        state
+            .prepare_probe_routes(&id, "utun4".into(), &["1.1.1.1".parse().unwrap()])
+            .unwrap();
+        assert_eq!(state.get(&id).unwrap().phase, Phase::Starting);
+        assert!(state.get(&id).unwrap().interface.is_none());
+        let pending = plan(&state.plan_input());
+        assert_eq!(
+            pending.routes,
+            BTreeMap::from([("1.1.1.1/32".parse().unwrap(), "utun4".into())])
+        );
+        assert_eq!(pending.primary, None);
+        assert!(pending.dns.is_empty());
+        let crate::control::plan::Firewall::Block(allowed) = pending.firewall else {
+            panic!("vpn-only stays blocking");
+        };
+        assert!(allowed.iter().any(|tunnel| tunnel.interface == "utun4"));
+        state.came_up(&id, "utun4".into(), [], [], None);
+        let connected = plan(&state.plan_input());
+        assert_eq!(connected.primary, Some(id));
+        assert!(!connected
+            .routes
+            .contains_key(&"1.1.1.1/32".parse().unwrap()));
+        assert!(!connected.dns.is_empty());
+    }
+
+    #[test]
+    fn failed_and_cancelled_starts_release_probe_routes() {
+        for cancel in [false, true] {
+            let mut state = State::default();
+            let id = ProfileId::new("01");
+            state
+                .begin(spec("01", "10.0.0.0/8"), 1, None, false)
+                .unwrap();
+            assert!(state
+                .prepare_probe_routes(&id, "utun4".into(), &["1.1.1.1".parse().unwrap()])
+                .is_err());
+            state
+                .prepare_probe_routes(&id, "utun4".into(), &["10.0.0.1".parse().unwrap()])
+                .unwrap();
+            if cancel {
+                state.stop(&id);
+                assert!(state
+                    .prepare_probe_routes(&id, "utun4".into(), &["10.0.0.1".parse().unwrap()])
+                    .is_err());
+            } else {
+                state.start_failed(&id, None);
+            }
+            assert!(plan(&state.plan_input()).routes.is_empty());
         }
     }
 

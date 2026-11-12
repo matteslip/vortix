@@ -156,10 +156,11 @@ on Arch, `amneziawg-tools` and `amneziawg-dkms` are in the AUR):
 
 ```bash
 brew install go bash  # macOS only: awg-quick needs bash 4+ (macOS ships 3.2)
-git clone https://github.com/amnezia-vpn/amneziawg-go && cd amneziawg-go && make \
-  && sudo cp amneziawg-go /usr/local/bin/
-git clone https://github.com/amnezia-vpn/amneziawg-tools && cd amneziawg-tools/src && make \
-  && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install   # awg + awg-quick
+git clone https://github.com/amnezia-vpn/amneziawg-go \
+  && (cd amneziawg-go && make && sudo cp amneziawg-go /usr/local/bin/)
+git clone https://github.com/amnezia-vpn/amneziawg-tools \
+  && (cd amneziawg-tools/src && make \
+      && sudo make PREFIX=/usr/local WITH_WGQUICK=yes install)   # awg + awg-quick
 ```
 
 Two more steps on macOS, where upstream's `awg-quick` darwin script still
@@ -169,6 +170,7 @@ v3.1.20260812; the original stays beside the script as
 `awg-quick.upstream-orig`):
 
 ```bash
+sudo cp /usr/local/bin/awg-quick /usr/local/bin/awg-quick.upstream-orig
 sudo sed -E -i '' -e 's|/var/run/wireguard|/var/run/amneziawg|g' \
   -e 's|^wg show|awg show|' -e 's|([^a-zA-Z_(])wg show|\1awg show|g' \
   -e 's|\(wg show|(awg show|g' \
@@ -276,6 +278,12 @@ finds the physical interface — the anchor `NetBird`'s interface-bound transpor
 destination keeps routing through it (`wg-quick` is held to `Table = off` there unless the profile sets its own `Table`, so the planner stays the sole route installer). Connect the mesh first when you can: its earliest
 management connections open before it binds its sockets, and those follow whatever routes
 are in place. IPv6 stays strictly claimed (`::/8` carries NAT64).
+
+On macOS, for a WireGuard peer without `PersistentKeepalive`, the planner installs temporary host
+routes to its configured health targets before the handshake probe. The tunnel stays
+handshaking until it has fresh evidence; its full routes and DNS apply afterward. These
+probe routes are removed on failure or replaced by the connected plan. Split prefixes more
+specific than `/1` keep their traffic even when a decomposed default claim is more specific.
 
 ### Connecting at boot
 

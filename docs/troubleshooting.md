@@ -64,6 +64,10 @@ letters, numbers, `_`, `.` or `-`. Rename the file (`work.conf`) and import it a
 and any preshared key, and that UDP to the server is not blocked. `sudo wg show` shows what the
 kernel sees.
 
+**`WireGuard probe routes` fails.** Vortix could not apply the network policy needed to
+send the handshake probe through the new interface. Check the accompanying network-settings
+error and retry. A stopped route coordinator requires restarting Vortix.
+
 **"Fwmark hijack risk".** See [the Role line](usage.md#connection-details-the-role-line).
 
 **Linux desktop: "Activation of network connection failed".** Harmless. NetworkManager adopts
@@ -145,6 +149,10 @@ curl -4 --max-time 15 --resolve cloudflare.com:443:104.16.132.229 https://cloudf
 
 Device-management software or another VPN client that owns DNS can stop Vortix from applying
 its resolvers.
+
+On macOS, `cannot read macOS dynamic-store key` or `cannot list macOS dynamic-store keys`
+means the DNS baseline could not be read reliably. Vortix refuses to replace it. Retry
+after the network service has settled; leave manual DNS settings in place while diagnosing.
 
 ## Connecting at boot
 
