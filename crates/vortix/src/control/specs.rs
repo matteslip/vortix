@@ -168,15 +168,8 @@ fn parse(
     };
     let (protocol, dns) = match profile.protocol {
         ProtocolKind::WireGuard | ProtocolKind::AmneziaWg => {
-            // AmneziaWG bodies carry obfuscation keys on top of stock
-            // syntax; the AmneziaWG parser accepts both shapes.
-            let parsed = if profile.protocol == ProtocolKind::AmneziaWg {
-                crate::amneziawg::parser::parse_awg_conf(body)
-                    .map(|parsed| parsed.base)
-                    .map_err(|error| error.to_string())?
-            } else {
-                crate::wireguard::parser::parse_wg_conf(body).map_err(|error| error.to_string())?
-            };
+            let parsed =
+                crate::wireguard::parser::parse_wg_conf(body).map_err(|error| error.to_string())?;
             for peer in &parsed.peers {
                 routes.extend(peer.allowed_ips.iter().copied());
                 if let Some(endpoint) = peer.endpoint {
