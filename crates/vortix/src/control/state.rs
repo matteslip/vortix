@@ -49,6 +49,7 @@ pub struct Tunnel {
     pub spec: Spec,
     pub phase: Phase,
     pub interface: Option<String>,
+    probe_routes: Option<(String, BTreeSet<Cidr>)>,
     /// Larger is newer; the newest full tunnel owns the default route.
     pub rank: u64,
     /// When the current phase began: uptime while `Up`, otherwise how long
@@ -79,7 +80,6 @@ pub enum Refusal {
 #[derive(Debug, Clone, Default)]
 pub struct State {
     tunnels: BTreeMap<ProfileId, Tunnel>,
-    probe_routes: BTreeMap<ProfileId, LiveTunnel>,
     pub kill_switch: KillSwitchMode,
 }
 
@@ -88,7 +88,6 @@ impl State {
     pub fn new(kill_switch: KillSwitchMode) -> Self {
         Self {
             tunnels: BTreeMap::new(),
-            probe_routes: BTreeMap::new(),
             kill_switch,
         }
     }
@@ -142,6 +141,7 @@ impl State {
                 },
                 spec,
                 interface: None,
+                probe_routes: None,
                 rank,
                 since: SystemTime::now(),
                 replaces,
@@ -162,6 +162,7 @@ impl State {
                 spec,
                 phase: Phase::Up,
                 interface: Some(interface),
+                probe_routes: None,
                 rank,
                 since,
                 replaces: None,
@@ -186,7 +187,6 @@ impl State {
         pushed_servers: impl IntoIterator<Item = IpAddr>,
         dns: Option<DnsRequest>,
     ) -> BTreeSet<ProfileId> {
-        self.probe_routes.remove(profile_id);
         let Some(tunnel) = self
             .tunnels
             .get_mut(profile_id)
@@ -196,6 +196,7 @@ impl State {
         };
         tunnel.phase = Phase::Up;
         tunnel.interface = Some(interface);
+        tunnel.probe_routes = None;
         tunnel.spec.routes.extend(pushed_routes);
         tunnel.spec.server_ips.extend(pushed_servers);
         if let Some(dns) = dns {
@@ -224,13 +225,13 @@ impl State {
     /// A start attempt failed. A fresh connect is forgotten; a recovery waits
     /// for `retry_at`. Returns whether the tunnel is still tracked.
     pub fn start_failed(&mut self, profile_id: &ProfileId, retry_at: Option<Instant>) -> bool {
-        self.probe_routes.remove(profile_id);
         let Some(tunnel) = self.tunnels.get_mut(profile_id) else {
             return false;
         };
         if !matches!(tunnel.phase, Phase::Starting | Phase::AwaitingCredentials) {
             return true;
         }
+        tunnel.probe_routes = None;
         if tunnel.recovering.is_some() {
             tunnel.phase = Phase::Waiting { retry_at };
             true
@@ -286,6 +287,7 @@ impl State {
         let attempt = tunnel.recovering.unwrap_or(0) + 1;
         tunnel.recovering = Some(attempt);
         tunnel.phase = Phase::Starting;
+        tunnel.probe_routes = None;
         Some(attempt)
     }
 
@@ -300,6 +302,7 @@ impl State {
             return false;
         }
         tunnel.phase = Phase::Stopping;
+        tunnel.probe_routes = None;
         tunnel.since = SystemTime::now();
         true
     }
@@ -329,7 +332,6 @@ impl State {
 
     /// The tunnel is gone. Returns it when it asked to start again.
     pub fn stopped(&mut self, profile_id: &ProfileId) -> Option<Tunnel> {
-        self.probe_routes.remove(profile_id);
         self.tunnels
             .remove(profile_id)
             .filter(|tunnel| tunnel.restart)
@@ -364,7 +366,7 @@ impl State {
     ) -> Result<(), String> {
         let tunnel = self
             .tunnels
-            .get(profile_id)
+            .get_mut(profile_id)
             .filter(|tunnel| tunnel.phase == Phase::Starting)
             .ok_or_else(|| "the tunnel is no longer starting".to_string())?;
         let routes: BTreeSet<_> = targets.iter().copied().map(Cidr::host).collect();
@@ -380,19 +382,7 @@ impl State {
         {
             return Err("invalid tunnel probe routes".into());
         }
-        self.probe_routes.insert(
-            profile_id.clone(),
-            LiveTunnel {
-                profile_id: profile_id.clone(),
-                interface,
-                routes,
-                server_ips: tunnel.spec.server_ips.clone(),
-                dns: DnsRequest::default(),
-                rank: tunnel.rank,
-                group: tunnel.spec.group,
-                mark: tunnel.spec.mark,
-            },
-        );
+        tunnel.probe_routes = Some((interface, routes));
         Ok(())
     }
 
@@ -401,29 +391,30 @@ impl State {
         let live = self
             .tunnels
             .values()
-            .filter(|tunnel| tunnel.phase == Phase::Up)
             .filter_map(|tunnel| {
+                let (interface, routes, dns) = match tunnel.phase {
+                    Phase::Up => (
+                        tunnel.interface.clone()?,
+                        tunnel.spec.routes.clone(),
+                        tunnel.spec.dns.clone(),
+                    ),
+                    Phase::Starting => {
+                        let (interface, routes) = tunnel.probe_routes.clone()?;
+                        (interface, routes, DnsRequest::default())
+                    }
+                    _ => return None,
+                };
                 Some(LiveTunnel {
                     profile_id: tunnel.spec.profile_id.clone(),
-                    interface: tunnel.interface.clone()?,
-                    routes: tunnel.spec.routes.clone(),
+                    interface,
+                    routes,
                     server_ips: tunnel.spec.server_ips.clone(),
-                    dns: tunnel.spec.dns.clone(),
+                    dns,
                     rank: tunnel.rank,
                     group: tunnel.spec.group,
                     mark: tunnel.spec.mark,
                 })
             })
-            .chain(
-                self.probe_routes
-                    .values()
-                    .filter(|probe| {
-                        self.tunnels
-                            .get(&probe.profile_id)
-                            .is_some_and(|tunnel| tunnel.phase == Phase::Starting)
-                    })
-                    .cloned(),
-            )
             .collect();
         // Tunnels still starting: their transport must get out before they are up.
         let pending: Vec<_> = self

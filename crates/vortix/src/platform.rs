@@ -5,7 +5,7 @@ pub use crate::linux::autoconnect;
 #[cfg(target_os = "linux")]
 pub use crate::linux::{
     clipboard_commands, desktop_env,
-    interface::{process_tun_device, tun_addresses, wireguard_started_at, wireguard_started_at_in},
+    interface::{process_tun_device, tun_addresses, wireguard_started_at_in},
     os_description, BROWSER_OPENER, FIREWALL_TOOL, NETBIRD_INTERFACE,
 };
 #[cfg(target_os = "linux")]
@@ -18,7 +18,7 @@ pub use crate::macos::autoconnect;
 #[cfg(target_os = "macos")]
 pub use crate::macos::{
     clipboard_commands, desktop_env,
-    interface::{process_tun_device, tun_addresses, wireguard_started_at, wireguard_started_at_in},
+    interface::{process_tun_device, tun_addresses, wireguard_started_at_in},
     os_description, BROWSER_OPENER, FIREWALL_TOOL, NETBIRD_INTERFACE,
 };
 #[cfg(target_os = "macos")]

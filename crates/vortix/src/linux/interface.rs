@@ -10,15 +10,6 @@ pub struct LinuxInterface;
 
 impl LinuxInterface {
     #[must_use]
-    pub fn resolve_wireguard_interface(name: &str) -> Option<String> {
-        Self::resolve_wireguard_interface_in(name, crate::constants::WIREGUARD_RUN_DIR)
-    }
-
-    /// [`Self::resolve_wireguard_interface`] for a quick tool other than
-    /// stock `wg-quick`. Linux names kernel devices after the config
-    /// basename, so `run_dir` plays no role; it exists for signature parity
-    /// with the macOS port.
-    #[must_use]
     pub fn resolve_wireguard_interface_in(name: &str, _run_dir: &str) -> Option<String> {
         // Protocol identity is verified by the WireGuard adapter. This port
         // answers only the platform question: does a kernel interface with
@@ -29,13 +20,6 @@ impl LinuxInterface {
             .then(|| name.to_string())
     }
 
-    #[must_use]
-    pub fn get_wireguard_pid(interface: &str) -> Option<u32> {
-        Self::get_wireguard_pid_in(interface, crate::constants::WIREGUARD_RUN_DIR, "wireguard")
-    }
-
-    /// [`Self::get_wireguard_pid`] for a quick tool whose userspace daemon
-    /// has a process path containing `needle` instead of "wireguard".
     #[must_use]
     pub fn get_wireguard_pid_in(interface: &str, _run_dir: &str, needle: &str) -> Option<u32> {
         // walk /proc directly instead of shelling to `ps`.
@@ -251,14 +235,6 @@ pub fn process_tun_device(_pid: u32) -> Option<String> {
     None
 }
 
-/// No file records when a `WireGuard` interface came up on Linux.
-#[must_use]
-pub fn wireguard_started_at(name: &str) -> Option<std::time::SystemTime> {
-    wireguard_started_at_in(name, crate::constants::WIREGUARD_RUN_DIR)
-}
-
-/// [`wireguard_started_at`] for a quick tool other than stock `wg-quick`;
-/// Linux records nothing either way.
 #[must_use]
 pub fn wireguard_started_at_in(_name: &str, _run_dir: &str) -> Option<std::time::SystemTime> {
     None

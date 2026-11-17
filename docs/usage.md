@@ -151,6 +151,10 @@ and everything else - routes and split tunnels from `AllowedIPs`, DNS, the kill 
 handshake health, side-by-side tunnels - works exactly as for WireGuard, because `awg show`
 reports the same peer and handshake evidence.
 
+`vortix show <profile>` displays the AmneziaWG generation and number of obfuscation keys.
+JSON output includes the optional `obfuscation` field when this information is available;
+other protocols and unreadable profiles omit it.
+
 The tools ship in no package manager Vortix can name, so install them from source (once;
 on Arch, `amneziawg-tools` and `amneziawg-dkms` are in the AUR):
 
