@@ -131,6 +131,30 @@ struct PlannedResolver {
     original: Option<Vec<u8>>,
 }
 
+/// A NULL read means a missing key or a failed read; only a successful
+/// listing without `key` proves it is missing.
+fn confirm_key_absent(key: &str, listing: Option<CFArray<CFString>>) -> Result<(), String> {
+    let listing = listing.ok_or_else(|| "cannot list macOS dynamic-store keys".to_string())?;
+    if listing.iter().any(|found| found.to_string() == key) {
+        Err(format!("cannot read macOS dynamic-store key {key}"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Proves `key` is missing with a listing of exactly that key.
+fn confirm_absent(store: &SCDynamicStore, key: &str) -> Result<(), String> {
+    let mut pattern = String::from("^");
+    for c in key.chars() {
+        if "\\.^$|?*+()[]{}".contains(c) {
+            pattern.push('\\');
+        }
+        pattern.push(c);
+    }
+    pattern.push('$');
+    confirm_key_absent(key, store.get_keys(pattern.as_str()))
+}
+
 impl MacDynamicStore {
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         match self {
@@ -138,7 +162,10 @@ impl MacDynamicStore {
                 let store = SCDynamicStoreBuilder::new(SC_STORE_NAME)
                     .build()
                     .ok_or_else(|| "cannot open the macOS dynamic store".to_string())?;
-                store.get(key).map(|value| encode_plist(&value)).transpose()
+                match store.get(key) {
+                    Some(value) => encode_plist(&value).map(Some),
+                    None => confirm_absent(&store, key).map(|()| None),
+                }
             }
             #[cfg(test)]
             Self::Memory(values) => values
@@ -180,10 +207,11 @@ impl MacDynamicStore {
                 let store = SCDynamicStoreBuilder::new(SC_STORE_NAME)
                     .build()
                     .ok_or_else(|| "cannot open the macOS dynamic store".to_string())?;
-                if store.get(key).is_none() || store.remove(key) {
+                if store.remove(key) {
                     Ok(())
                 } else {
-                    Err(format!("cannot remove macOS dynamic-store key {key}"))
+                    confirm_absent(&store, key)
+                        .map_err(|_| format!("cannot remove macOS dynamic-store key {key}"))
                 }
             }
             #[cfg(test)]
@@ -315,6 +343,14 @@ fn encode_json_string(value: &impl serde::Serialize) -> Result<Vec<u8>, String> 
     let json = serde_json::to_string(value)
         .map_err(|error| format!("cannot encode Vortix DNS ownership: {error}"))?;
     encode_cf_value(CFString::new(&json))
+}
+
+/// Two dynamic-store values, either of which may be absent.
+fn optional_values_equal(left: Option<&[u8]>, right: Option<&[u8]>) -> Result<bool, String> {
+    match (left, right) {
+        (Some(left), Some(right)) => plist_values_equal(left, right),
+        (left, right) => Ok(left.is_none() && right.is_none()),
+    }
 }
 
 fn decode_json_string<T: serde::de::DeserializeOwned>(value: &[u8]) -> Result<T, String> {
@@ -535,24 +571,30 @@ impl MacDnsPolicy {
         primary_dns_value(&owner.servers, &owner.search_domains)
     }
 
-    fn backup_value(backup: &PrimaryDnsBackup) -> Result<Vec<u8>, String> {
+    /// `None` when the service had no DNS key (DHCP-only), saved as an empty value.
+    fn backup_value(backup: &PrimaryDnsBackup) -> Result<Option<Vec<u8>>, String> {
         use base64::Engine as _;
 
+        if backup.encoded_value.is_empty() {
+            return Ok(None);
+        }
         base64::engine::general_purpose::STANDARD
             .decode(&backup.encoded_value)
             .map_err(|_| "macOS primary DNS backup is not valid base64".to_string())
             .and_then(|value| {
                 decode_plist(&value)?;
-                Ok(value)
+                Ok(Some(value))
             })
     }
 
-    fn new_backup(service_key: String, value: &[u8]) -> PrimaryDnsBackup {
+    fn new_backup(service_key: String, value: Option<&[u8]>) -> PrimaryDnsBackup {
         use base64::Engine as _;
 
         PrimaryDnsBackup {
             service_key,
-            encoded_value: base64::engine::general_purpose::STANDARD.encode(value),
+            encoded_value: value
+                .map(|value| base64::engine::general_purpose::STANDARD.encode(value))
+                .unwrap_or_default(),
         }
     }
 
@@ -565,25 +607,23 @@ impl MacDnsPolicy {
 
     fn should_adopt_current_primary_baseline(
         previous_is_absent: bool,
-        current: &[u8],
+        current: Option<&[u8]>,
         owner: Option<&PrimaryDnsOwner>,
         backup: Option<&PrimaryDnsBackup>,
     ) -> Result<bool, String> {
         if !previous_is_absent {
             return Ok(false);
         }
-        let Some(stale_value) = owner
-            .map(Self::owner_dns_value)
-            .or_else(|| backup.map(Self::backup_value))
-            .transpose()?
-        else {
-            return Ok(false);
+        let stale_value = match (owner, backup) {
+            (Some(owner), _) => Some(Self::owner_dns_value(owner)?),
+            (None, Some(backup)) => Self::backup_value(backup)?,
+            (None, None) => return Ok(false),
         };
-        Ok(!plist_values_equal(current, &stale_value)?)
+        Ok(!optional_values_equal(current, stale_value.as_deref())?)
     }
 
     fn validate_owned_primary_replacement(
-        current: &[u8],
+        current: Option<&[u8]>,
         desired: &[u8],
         desired_owner: &PrimaryDnsOwner,
         current_owner: &PrimaryDnsOwner,
@@ -598,7 +638,9 @@ impl MacDnsPolicy {
             return Err("macOS primary DNS is owned by another generation".to_string());
         }
         let owned_value = Self::owner_dns_value(current_owner)?;
-        if plist_values_equal(current, &owned_value)? || plist_values_equal(current, desired)? {
+        if optional_values_equal(current, Some(&owned_value))?
+            || optional_values_equal(current, Some(desired))?
+        {
             Ok(())
         } else {
             Err("macOS primary DNS changed during replacement".to_string())
@@ -631,14 +673,12 @@ impl MacDnsPolicy {
             _ => return Err("macOS primary DNS ownership and backup disagree".to_string()),
         };
         let old_service = self.dynamic_store.get(&service_key)?;
-        let old_service = old_service
-            .ok_or_else(|| "macOS primary network service has no DNS configuration".to_string())?;
         let owner = Self::primary_owner(generation, assignment, service_key.clone());
         let desired = Self::owner_dns_value(&owner)?;
 
         let adopt_current_baseline = Self::should_adopt_current_primary_baseline(
             previous.is_none(),
-            &old_service,
+            old_service.as_deref(),
             parsed_owner.as_ref(),
             parsed_backup.as_ref(),
         )?;
@@ -649,7 +689,7 @@ impl MacDnsPolicy {
         if !adopt_current_baseline {
             if let Some(current_owner) = parsed_owner.as_ref() {
                 Self::validate_owned_primary_replacement(
-                    &old_service,
+                    old_service.as_deref(),
                     &desired,
                     &owner,
                     current_owner,
@@ -661,8 +701,8 @@ impl MacDnsPolicy {
                     .as_ref()
                     .ok_or_else(|| "macOS primary DNS backup disappeared".to_string())?;
                 let prior = Self::backup_value(backup)?;
-                if !plist_values_equal(&old_service, &prior)?
-                    && !plist_values_equal(&old_service, &desired)?
+                if !optional_values_equal(old_service.as_deref(), prior.as_deref())?
+                    && !optional_values_equal(old_service.as_deref(), Some(&desired))?
                 {
                     return Err("macOS primary DNS changed during interrupted apply".to_string());
                 }
@@ -671,7 +711,10 @@ impl MacDnsPolicy {
 
         let result = (|| {
             if needs_backup {
-                self.set_primary_backup(&Self::new_backup(service_key.clone(), &old_service))?;
+                self.set_primary_backup(&Self::new_backup(
+                    service_key.clone(),
+                    old_service.as_deref(),
+                ))?;
             }
             self.dynamic_store.set(&service_key, &desired)?;
             let read_back = self
@@ -686,7 +729,8 @@ impl MacDnsPolicy {
         })();
         if let Err(error) = result {
             let mut rollback_errors = Vec::new();
-            if let Err(rollback) = self.restore_dynamic_value(&service_key, Some(&old_service)) {
+            if let Err(rollback) = self.restore_dynamic_value(&service_key, old_service.as_deref())
+            {
                 rollback_errors.push(rollback);
             }
             if let Err(rollback) =
@@ -752,11 +796,8 @@ impl MacDnsPolicy {
         let prior = Self::backup_value(&backup)?;
 
         let Some(owner) = owner else {
-            let actual = self
-                .dynamic_store
-                .get(&backup.service_key)?
-                .ok_or_else(|| "macOS primary DNS configuration is absent".to_string())?;
-            if !plist_values_equal(&actual, &prior)? {
+            let actual = self.dynamic_store.get(&backup.service_key)?;
+            if !optional_values_equal(actual.as_deref(), prior.as_deref())? {
                 return Err("macOS primary DNS changed during interrupted release".to_string());
             }
             return self.dynamic_store.remove(VORTIX_PRIMARY_DNS_BACKUP_KEY);
@@ -779,12 +820,9 @@ impl MacDnsPolicy {
         if !plist_values_equal(&actual, &Self::owner_dns_value(&owner)?)? {
             return Err("refusing to overwrite externally changed macOS DNS".to_string());
         }
-        self.dynamic_store.set(&owner.service_key, &prior)?;
-        let restored = self
-            .dynamic_store
-            .get(&owner.service_key)?
-            .ok_or_else(|| "restored macOS primary DNS disappeared".to_string())?;
-        if !plist_values_equal(&restored, &prior)? {
+        self.restore_dynamic_value(&owner.service_key, prior.as_deref())?;
+        let restored = self.dynamic_store.get(&owner.service_key)?;
+        if !optional_values_equal(restored.as_deref(), prior.as_deref())? {
             return Err("macOS primary DNS restoration read-back mismatch".to_string());
         }
         self.dynamic_store.flush_dns_cache()?;
@@ -1599,6 +1637,62 @@ mod policy_tests {
                 },
             }],
         }
+    }
+
+    /// A DHCP-only service has no Setup DNS key: apply works and release
+    /// removes the key again.
+    #[test]
+    fn dhcp_only_primary_without_manual_dns_is_a_valid_baseline() {
+        let temp = tempfile::tempdir().unwrap();
+        let adapter = MacDnsPolicy::at(temp.path().join("resolver"));
+        let service_key = adapter.primary_service_key().unwrap();
+        adapter.dynamic_store.remove(&service_key).unwrap();
+
+        let first = policy(1, "10.80.0.1");
+        let applied = adapter.apply(&first, None, &DnsEffectiveState::default());
+        assert_eq!(applied.status, DnsEffectiveStatus::Applied);
+        assert_eq!(adapter.test_primary_dns_servers(), vec!["10.80.0.1"]);
+
+        let released_policy = DnsPolicy {
+            generation: 2,
+            assignments: Vec::new(),
+        };
+        let released = adapter.apply(&released_policy, Some(&first), &applied);
+        assert_eq!(released.status, DnsEffectiveStatus::Released);
+        assert_eq!(adapter.dynamic_store.get(&service_key).unwrap(), None);
+
+        // After a restart, release starts from no previous policy.
+        let applied = adapter.apply(&policy(3, "10.80.0.1"), None, &DnsEffectiveState::default());
+        assert_eq!(applied.status, DnsEffectiveStatus::Applied);
+        let released = adapter.apply(
+            &DnsPolicy {
+                generation: 4,
+                assignments: Vec::new(),
+            },
+            None,
+            &DnsEffectiveState::default(),
+        );
+        assert_eq!(released.status, DnsEffectiveStatus::Released);
+        assert_eq!(adapter.dynamic_store.get(&service_key).unwrap(), None);
+        assert!(adapter.primary_backup_state().unwrap().is_none());
+    }
+
+    /// Reads the real store, which needs no root; `Setup:/` always exists.
+    #[test]
+    fn an_existing_key_is_listed() {
+        let store = SCDynamicStoreBuilder::new(SC_STORE_NAME).build().unwrap();
+        assert!(confirm_absent(&store, "Setup:/").is_err());
+        assert!(confirm_absent(&store, "Setup:/.missing").is_ok());
+    }
+
+    /// A missing read is recorded as "no DNS key" only when a listing proves it.
+    #[test]
+    fn an_absent_key_needs_a_successful_listing() {
+        let key = "Setup:/Network/Service/test/DNS";
+        assert!(confirm_key_absent(key, None).is_err());
+        let listed = CFArray::from_CFTypes(&[CFString::new(key)]);
+        assert!(confirm_key_absent(key, Some(listed)).is_err());
+        assert!(confirm_key_absent(key, Some(CFArray::<CFString>::from_CFTypes(&[]))).is_ok());
     }
 
     #[test]
