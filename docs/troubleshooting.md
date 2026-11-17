@@ -151,8 +151,8 @@ Device-management software or another VPN client that owns DNS can stop Vortix f
 its resolvers.
 
 On macOS, `cannot read macOS dynamic-store key` or `cannot list macOS dynamic-store keys`
-means the DNS baseline could not be read reliably. Vortix refuses to replace it. Retry
-after the network service has settled; leave manual DNS settings in place while diagnosing.
+means macOS failed a read of its network settings store, so Vortix did not change or restore
+DNS. Reconnect, or disconnect again, once the network has settled.
 
 ## Connecting at boot
 
